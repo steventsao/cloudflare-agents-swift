@@ -35,6 +35,9 @@ public actor AgentClient<State: Codable & Sendable> {
     public private(set) var state: State?
     public private(set) var identified = false
 
+    // Upstream TS only reports cf_agent_state_error. Keep the latest server
+    // snapshot so Swift observers can recover from rejected optimistic state.
+    private var lastServerState: State?
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession
     private var pendingCalls: [String: CheckedContinuation<AnyCodable?, Error>] = [:]
@@ -468,11 +471,16 @@ public actor AgentClient<State: Codable & Sendable> {
                let decoded = try? JSONDecoder().decode(State.self, from: stateData)
             {
                 state = decoded
+                lastServerState = decoded
                 onStateUpdate?(decoded, .server)
             }
 
         case MessageType.stateError.rawValue:
             if let errorMsg = json["error"] as? String {
+                if let lastServerState {
+                    state = lastServerState
+                    onStateUpdate?(lastServerState, .server)
+                }
                 onError?(AgentError.rpcFailed(errorMsg))
             }
 

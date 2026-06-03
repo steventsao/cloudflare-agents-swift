@@ -104,6 +104,10 @@ public final class AgentStateStore<State: Codable & Sendable>: ObservableObject 
             Task { @MainActor in
                 self?.state = state
                 self?.lastStateSource = source
+                if source == .server {
+                    self?.lastError = nil
+                    self?.lastStateError = nil
+                }
             }
         }
 

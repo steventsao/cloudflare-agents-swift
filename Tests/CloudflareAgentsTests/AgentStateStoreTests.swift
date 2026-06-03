@@ -184,6 +184,67 @@ final class AgentStateStoreTests: XCTestCase {
         await store.disconnect()
     }
 
+    func testStateErrorRollsBackStoreAndClearsOnFreshServerState() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = try XCTUnwrap(server.port)
+        server.onConnect = { conn in
+            conn.send("""
+            {"type":"cf_agent_identity","name":"room","agent":"test-agent"}
+            """)
+            conn.send("""
+            {"type":"cf_agent_state","state":{"count":1}}
+            """)
+            conn.startEchoing { incoming in
+                guard let data = incoming.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let type = json["type"] as? String,
+                      type == "cf_agent_state"
+                else { return nil }
+
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
+                    conn.send("""
+                    {"type":"cf_agent_state","state":{"count":2}}
+                    """)
+                }
+                return """
+                {"type":"cf_agent_state_error","error":"State update rejected"}
+                """
+            }
+        }
+
+        let store = AgentStateStore<CountState>(options: .init(
+            agent: "TestAgent",
+            name: "room",
+            host: "ws://localhost:\(port)"
+        ))
+
+        await store.connect()
+        await store.waitForReady()
+        try await waitUntil("store receives initial server state") {
+            store.state == CountState(count: 1)
+        }
+
+        try await store.setState(CountState(count: 99))
+
+        try await waitUntil("store rolls back rejected optimistic state") {
+            store.state == CountState(count: 1) &&
+                store.lastStateSource == .server &&
+                store.lastStateError == "State update rejected"
+        }
+
+        try await waitUntil("fresh server state clears rejection") {
+            store.state == CountState(count: 2) &&
+                store.lastStateSource == .server &&
+                store.lastStateError == nil &&
+                store.lastError == nil
+        }
+
+        await store.disconnect()
+    }
+
     private func waitUntil(
         _ description: String,
         timeout: TimeInterval = 2.0,

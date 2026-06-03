@@ -16,6 +16,20 @@ final class StateRoundTripTests: XCTestCase {
         let count: Int
     }
 
+    actor CountStateLog {
+        private var counts: [Int] = []
+        private var sources: [StateSource] = []
+
+        func record(_ state: CountState, _ source: StateSource) {
+            counts.append(state.count)
+            sources.append(source)
+        }
+
+        func values() -> (counts: [Int], sources: [StateSource]) {
+            (counts, sources)
+        }
+    }
+
     // MARK: - setState rejected by server sends stateError back to client
 
     func testSetStateRejectedByServerFiresStateError() async throws {
@@ -65,6 +79,70 @@ final class StateRoundTripTests: XCTestCase {
 
         let errorMsg = await capturedError.value
         XCTAssertEqual(errorMsg, "Connection is readonly")
+
+        await client.disconnect()
+    }
+
+    func testSetStateRejectedByServerRollsBackToLastServerState() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = server.port!
+
+        server.onConnect = { conn in
+            conn.send("""
+            {"type":"cf_agent_identity","name":"r","agent":"a"}
+            """)
+            conn.send("""
+            {"type":"cf_agent_state","state":{"count":1}}
+            """)
+            conn.startEchoing(handler: { incoming in
+                guard let json = try? JSONSerialization.jsonObject(with: incoming.data(using: .utf8)!) as? [String: Any],
+                      let type_ = json["type"] as? String, type_ == "cf_agent_state" else { return nil }
+                return """
+                {"type":"cf_agent_state_error","error":"State update rejected"}
+                """
+            })
+        }
+
+        let client = AgentClient<CountState>(options: .init(
+            agent: "a", name: "r",
+            host: "ws://localhost:\(port)"
+        ))
+
+        let updates = expectation(description: "initial, optimistic, rollback updates")
+        updates.expectedFulfillmentCount = 3
+        let rejection = expectation(description: "state rejection")
+        let log = CountStateLog()
+
+        await client.onStateUpdate { state, source in
+            Task {
+                await log.record(state, source)
+                updates.fulfill()
+            }
+        }
+        await client.onError { error in
+            if let agentError = error as? AgentError,
+               case .rpcFailed(let message) = agentError,
+               message == "State update rejected" {
+                rejection.fulfill()
+            }
+        }
+
+        await client.connect()
+        await client.waitForReady()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try await client.setState(CountState(count: 99))
+
+        await fulfillment(of: [updates, rejection], timeout: 2.0)
+
+        let finalState = await client.state
+        XCTAssertEqual(finalState, CountState(count: 1))
+
+        let values = await log.values()
+        XCTAssertEqual(values.counts, [1, 99, 1])
+        XCTAssertEqual(values.sources, [.server, .client, .server])
 
         await client.disconnect()
     }

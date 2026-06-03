@@ -69,6 +69,24 @@ dependencies: [
 - Swift concurrency (`actor`-based, `Sendable`-safe)
 - Main-actor `AgentStateStore` adapter with `@Published` state, identity, connection, and error properties
 
+## State rejection reconciliation
+
+The upstream TypeScript client treats `setState()` as an optimistic local update
+and reports `cf_agent_state_error` through `onStateUpdateError`; that protocol
+message currently carries only an error string, not a mutation id or replacement
+state. This Swift client keeps the same wire format and optimistic callback
+behavior, then reconciles rejected optimistic state by restoring the latest
+server-delivered `cf_agent_state` when one is available.
+
+Assumptions behind that behavior:
+
+- The server is authoritative for durable agent state.
+- `cf_agent_state_error` rejects at least one pending optimistic client state.
+- Because errors are not correlated to a specific `setState`, rollback is
+  conservative: any rejection restores the latest server snapshot. Apps that
+  need stronger ordering should wait for a server broadcast before sending
+  dependent state mutations.
+
 ## Protocol Compatibility
 
 Wire format matches the [cloudflare/agents](https://github.com/cloudflare/agents) TypeScript SDK:
