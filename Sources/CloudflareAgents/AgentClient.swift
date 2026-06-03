@@ -52,6 +52,8 @@ public actor AgentClient<State: Codable & Sendable> {
     private var onSession: (@Sendable ([String: Any]) -> Void)?
     private var onSessionError: (@Sendable (String) -> Void)?
     private var receiveTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    private var heartbeatInterval: TimeInterval = 12
     private var readyContinuation: CheckedContinuation<Void, Never>?
     private var previousName: String?
     private var previousAgent: String?
@@ -128,6 +130,25 @@ public actor AgentClient<State: Codable & Sendable> {
 
     public func connect() {
         guard webSocketTask == nil else { return }
+        openConnection()
+    }
+
+    /// Re-verify the connection after the app returns to foreground. iOS sleep/wake
+    /// leaves a half-open socket that `receive()` won't necessarily error on, so the
+    /// client can keep "looking" connected while sends silently fail and moves derived
+    /// from stale state get rejected. Pings the socket and force-reconnects (→ fresh
+    /// `cf_agent_state` resync) if it's dead; reconnects outright if already closed.
+    public func resume() {
+        guard let ws = webSocketTask else {
+            forceReconnect()
+            return
+        }
+        ws.sendPing { [weak self] error in
+            if error != nil { Task { await self?.forceReconnect() } }
+        }
+    }
+
+    private func openConnection() {
         connectionState = .connecting
         onConnectionStateChange?(.connecting)
 
@@ -141,6 +162,51 @@ public actor AgentClient<State: Codable & Sendable> {
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
+        startHeartbeat()
+    }
+
+    /// Tear down the current socket and immediately open a fresh one (no backoff).
+    private func forceReconnect() {
+        heartbeatTask?.cancel(); heartbeatTask = nil
+        receiveTask?.cancel(); receiveTask = nil
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        identified = false
+        reconnectAttempt = 0
+        openConnection()
+    }
+
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        let interval = heartbeatInterval
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                await self?.pingOnce()
+            }
+        }
+    }
+
+    private func pingOnce() {
+        guard let ws = webSocketTask else { return }
+        ws.sendPing { [weak self] error in
+            if let error { Task { await self?.handleSocketFailure(error) } }
+        }
+    }
+
+    /// A dead socket surfaced via a failed ping or send. Tear down and reconnect.
+    private func handleSocketFailure(_ error: Error) {
+        guard webSocketTask != nil else { return }
+        heartbeatTask?.cancel(); heartbeatTask = nil
+        receiveTask?.cancel(); receiveTask = nil
+        webSocketTask?.cancel(with: .abnormalClosure, reason: nil)
+        webSocketTask = nil
+        identified = false
+        connectionState = .disconnected
+        onConnectionStateChange?(.disconnected)
+        onError?(error)
+        if autoReconnectEnabled { scheduleReconnect() }
     }
 
     public func disconnect() {
@@ -149,6 +215,8 @@ public actor AgentClient<State: Codable & Sendable> {
         reconnectAttempt = 0
         pendingTimeoutTasks.values.forEach { $0.cancel() }
         pendingTimeoutTasks.removeAll()
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         receiveTask?.cancel()
         receiveTask = nil
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -176,10 +244,13 @@ public actor AgentClient<State: Codable & Sendable> {
     // MARK: - State
 
     public func setState(_ newState: State) throws {
+        guard let ws = webSocketTask else { throw AgentError.connectionClosed }
         let message = StateMessage(type: .state, state: newState)
         let data = try JSONEncoder().encode(message)
         guard let json = String(data: data, encoding: .utf8) else { return }
-        webSocketTask?.send(.string(json)) { _ in }
+        ws.send(.string(json)) { [weak self] error in
+            if let error { Task { await self?.handleSocketFailure(error) } }
+        }
         self.state = newState
         onStateUpdate?(newState, .client)
     }
@@ -332,6 +403,8 @@ public actor AgentClient<State: Codable & Sendable> {
                     break
                 }
             } catch {
+                heartbeatTask?.cancel()
+                heartbeatTask = nil
                 webSocketTask = nil
                 receiveTask = nil
                 identified = false
@@ -367,19 +440,7 @@ public actor AgentClient<State: Codable & Sendable> {
 
     private func reconnect() {
         guard autoReconnectEnabled, webSocketTask == nil else { return }
-        connectionState = .connecting
-        onConnectionStateChange?(.connecting)
-
-        let task = session.webSocketTask(with: makeWebSocketRequest())
-        webSocketTask = task
-        task.resume()
-
-        connectionState = .connected
-        onConnectionStateChange?(.connected)
-
-        receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
-        }
+        openConnection()
     }
 
     private func handleMessage(_ text: String) {
