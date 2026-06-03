@@ -1,7 +1,7 @@
 import Foundation
 
 /// Connection state
-public enum AgentConnectionState: Sendable {
+public enum AgentConnectionState: Equatable, Sendable {
     case disconnected
     case connecting
     case connected
@@ -19,7 +19,7 @@ public protocol AgentClientDelegate: AnyObject, Sendable {
     func agentClient(_ client: AgentClient<State>, didReceiveError error: Error)
 }
 
-public enum StateSource: Sendable {
+public enum StateSource: Equatable, Sendable {
     case server
     case client
 }
@@ -39,6 +39,7 @@ public actor AgentClient<State: Codable & Sendable> {
     private var session: URLSession
     private var pendingCalls: [String: CheckedContinuation<AnyCodable?, Error>] = [:]
     private var pendingStreamChunks: [String: (AnyCodable?) -> Void] = [:]
+    private var pendingTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var onStateUpdate: (@Sendable (State, StateSource) -> Void)?
     private var onIdentity: (@Sendable (String, String) -> Void)?
     private var onUnhandledMessage: (@Sendable (String) -> Void)?
@@ -146,6 +147,8 @@ public actor AgentClient<State: Codable & Sendable> {
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = 0
+        pendingTimeoutTasks.values.forEach { $0.cancel() }
+        pendingTimeoutTasks.removeAll()
         receiveTask?.cancel()
         receiveTask = nil
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -203,15 +206,28 @@ public actor AgentClient<State: Codable & Sendable> {
 
     /// Convenience: call with timeout
     public func call(_ method: String, args: [AnyCodable] = [], timeout: TimeInterval) async throws -> AnyCodable? {
-        try await withThrowingTaskGroup(of: AnyCodable?.self) { group in
-            group.addTask { try await self.call(method, args: args) }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw AgentError.timeout(method: method, seconds: timeout)
+        let request = RPCRequest(method: method, args: args)
+        let data = try JSONEncoder().encode(request)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw AgentError.encodingFailed
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingCalls[request.id] = continuation
+
+            let timeoutTask = Task { [weak self] in
+                let nanoseconds = UInt64(max(timeout, 0) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                guard !Task.isCancelled else { return }
+                await self?.timeoutCall(id: request.id, method: method, seconds: timeout)
             }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            pendingTimeoutTasks[request.id] = timeoutTask
+
+            webSocketTask?.send(.string(json)) { [weak self] error in
+                if let error {
+                    Task { await self?.rejectCall(id: request.id, error: error) }
+                }
+            }
         }
     }
 
@@ -456,6 +472,7 @@ public actor AgentClient<State: Codable & Sendable> {
 
         // done == true or done == nil (non-streaming): resolve the continuation
         guard let continuation = pendingCalls.removeValue(forKey: id) else { return }
+        pendingTimeoutTasks.removeValue(forKey: id)?.cancel()
         pendingStreamChunks.removeValue(forKey: id)
 
         if !success {
@@ -474,8 +491,16 @@ public actor AgentClient<State: Codable & Sendable> {
 
     private func rejectCall(id: String, error: Error) {
         if let continuation = pendingCalls.removeValue(forKey: id) {
+            pendingTimeoutTasks.removeValue(forKey: id)?.cancel()
             continuation.resume(throwing: error)
         }
+    }
+
+    private func timeoutCall(id: String, method: String, seconds: TimeInterval) {
+        guard let continuation = pendingCalls.removeValue(forKey: id) else { return }
+        pendingTimeoutTasks.removeValue(forKey: id)?.cancel()
+        pendingStreamChunks.removeValue(forKey: id)
+        continuation.resume(throwing: AgentError.timeout(method: method, seconds: seconds))
     }
 
     private static func camelCaseToKebabCase(_ input: String) -> String {

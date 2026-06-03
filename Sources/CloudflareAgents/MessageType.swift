@@ -179,8 +179,8 @@ public struct AnyCodable: Codable, Sendable, ExpressibleByStringLiteral,
         case let v as Int: try container.encode(v)
         case let v as Double: try container.encode(v)
         case let v as String: try container.encode(v)
-        case let v as [Any]: try container.encode(v.map { AnyCodable($0 as! any Sendable) })
-        case let v as [String: Any]: try container.encode(v.mapValues { AnyCodable($0 as! any Sendable) })
+        case let v as [Any]: try container.encode(v.map { AnyCodable($0 as any Sendable) })
+        case let v as [String: Any]: try container.encode(v.mapValues { AnyCodable($0 as any Sendable) })
         default: throw EncodingError.invalidValue(value, .init(codingPath: [], debugDescription: "Unsupported type"))
         }
     }
