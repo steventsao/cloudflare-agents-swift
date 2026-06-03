@@ -81,6 +81,32 @@ Wire format matches the [cloudflare/agents](https://github.com/cloudflare/agents
 | `cf_agent_mcp_servers` | server -> client | MCP server list |
 | `rpc` | bidirectional | Remote procedure calls |
 
+## Interop note: your `State` must emit explicit `null`
+
+The JS Agent strict-compares state fields server-side (e.g. `state.winner !== expected.winner`).
+Swift's default `JSONEncoder` **omits `nil` optionals** rather than encoding them as `null`
+([SR-9232](https://github.com/apple/swift-corelibs-foundation/issues/3594)), so a `nil` field
+arrives as `undefined`, fails the `!== null` check, and the agent replies `cf_agent_state_error`
+("State update rejected").
+
+This is a Swift↔JS Codable property, not something the client can fix generically — Foundation
+has no global "encode nulls" flag. Emit explicit nulls at the model layer:
+
+- **One/few optionals:** custom `encode(to:)` using `encodeNil(forKey:)`.
+- **Many optionals:** a property wrapper such as [`@NullCodable`](https://github.com/g-mark/NullCodable).
+
+```swift
+// nil winner must serialize as `"winner": null`, not be dropped
+public func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    if let winner { try c.encode(winner, forKey: .winner) } else { try c.encodeNil(forKey: .winner) }
+    // ...other fields...
+}
+```
+
+(Raw WS libraries like Starscream don't help — they only move bytes. Even `supabase-swift`
+centralizes encoder *config* in a shared factory but still expresses null-emission per model.)
+
 ## Application Integration TODO
 
 Keep this package generic. For app-level realtime workflow UI, add integration in the app layer:
