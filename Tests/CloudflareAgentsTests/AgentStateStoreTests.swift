@@ -7,6 +7,11 @@ final class AgentStateStoreTests: XCTestCase {
         let count: Int
     }
 
+    struct RoomState: Codable, Sendable, Equatable {
+        let room: String
+        let count: Int
+    }
+
     actor CountRecorder {
         private var storage: [Int] = []
 
@@ -99,6 +104,108 @@ final class AgentStateStoreTests: XCTestCase {
         XCTAssertEqual(recordedValues, [9])
 
         await store.disconnect()
+    }
+
+    func testMultipleStoresMirrorIndependentUseAgentInstances() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = try XCTUnwrap(server.port)
+        let recorder = RoomRecorder()
+        var connectCount = 0
+        var connections: [String: MockWSConnection] = [:]
+
+        server.onConnect = { conn in
+            connectCount += 1
+            let side = connectCount == 1 ? "left" : "right"
+            let room = "\(side)-room"
+            let initialCount = side == "left" ? 10 : 20
+            connections[side] = conn
+
+            conn.send("""
+            {"type":"cf_agent_identity","name":"\(room)","agent":"counter-agent"}
+            """)
+            conn.send("""
+            {"type":"cf_agent_state","state":{"room":"\(side)","count":\(initialCount)}}
+            """)
+            conn.startEchoing { incoming in
+                guard let data = incoming.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let type = json["type"] as? String,
+                      type == "cf_agent_state",
+                      let state = json["state"] as? [String: Any],
+                      let stateRoom = state["room"] as? String,
+                      let count = state["count"] as? Int
+                else { return nil }
+
+                Task { await recorder.record(connectionRoom: side, stateRoom: stateRoom, count: count) }
+                return nil
+            }
+        }
+
+        let left = AgentStateStore<RoomState>(options: .init(
+            agent: "CounterAgent",
+            name: "left-room",
+            host: "ws://localhost:\(port)"
+        ))
+        let right = AgentStateStore<RoomState>(options: .init(
+            agent: "CounterAgent",
+            name: "right-room",
+            host: "ws://localhost:\(port)"
+        ))
+        let fixture = MultiUseAgentFixture(left: left, right: right)
+
+        await left.connect()
+        try await waitUntil("left store receives its identity and state") {
+            left.identity == AgentIdentity(name: "left-room", agent: "counter-agent") &&
+                left.state == RoomState(room: "left", count: 10)
+        }
+
+        await right.connect()
+        try await waitUntil("right store receives its identity and state") {
+            right.identity == AgentIdentity(name: "right-room", agent: "counter-agent") &&
+                right.state == RoomState(room: "right", count: 20)
+        }
+
+        XCTAssertEqual(fixture.instanceSummary, "left-room:left=10 | right-room:right=20")
+        XCTAssertEqual(fixture.totalCount, 30)
+
+        try await left.setState(RoomState(room: "left", count: 11))
+        try await right.setState(RoomState(room: "right", count: 21))
+
+        try await waitUntil("both optimistic writes stay scoped to their own store") {
+            left.state == RoomState(room: "left", count: 11) &&
+                right.state == RoomState(room: "right", count: 21)
+        }
+
+        let expectedRecords: Set<RoomRecord> = [
+            RoomRecord(connectionRoom: "left", stateRoom: "left", count: 11),
+            RoomRecord(connectionRoom: "right", stateRoom: "right", count: 21),
+        ]
+        try await waitUntilAsync("server receives each store update on its own connection") {
+            Set(await recorder.records()) == expectedRecords
+        }
+
+        let recordedRecords = Set(await recorder.records())
+        XCTAssertEqual(recordedRecords, expectedRecords)
+
+        connections["left"]?.send("""
+        {"type":"cf_agent_state","state":{"room":"left","count":12}}
+        """)
+
+        try await waitUntil("server update for one store does not overwrite the other") {
+            left.state == RoomState(room: "left", count: 12) &&
+                left.lastStateSource == .server &&
+                right.state == RoomState(room: "right", count: 21) &&
+                right.lastStateSource == .client
+        }
+
+        XCTAssertEqual(fixture.instanceSummary, "left-room:left=12 | right-room:right=21")
+        XCTAssertEqual(fixture.totalCount, 33)
+
+        await left.disconnect()
+        await right.disconnect()
     }
 
     func testCallPassesThroughToClient() async throws {
@@ -256,5 +363,61 @@ final class AgentStateStoreTests: XCTestCase {
             try await Task.sleep(nanoseconds: 25_000_000)
         }
         XCTFail("Timed out waiting for \(description)")
+    }
+
+    private func waitUntilAsync(
+        _ description: String,
+        timeout: TimeInterval = 2.0,
+        predicate: @escaping () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await predicate() { return }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTFail("Timed out waiting for \(description)")
+    }
+}
+
+private struct RoomRecord: Hashable, Sendable {
+    let connectionRoom: String
+    let stateRoom: String
+    let count: Int
+}
+
+private actor RoomRecorder {
+    private var storage: [RoomRecord] = []
+
+    func record(connectionRoom: String, stateRoom: String, count: Int) {
+        storage.append(RoomRecord(
+            connectionRoom: connectionRoom,
+            stateRoom: stateRoom,
+            count: count
+        ))
+    }
+
+    func records() -> [RoomRecord] {
+        storage
+    }
+}
+
+@MainActor
+private struct MultiUseAgentFixture {
+    let left: AgentStateStore<AgentStateStoreTests.RoomState>
+    let right: AgentStateStore<AgentStateStoreTests.RoomState>
+
+    var instanceSummary: String {
+        "\(label(for: left)) | \(label(for: right))"
+    }
+
+    var totalCount: Int {
+        (left.state?.count ?? 0) + (right.state?.count ?? 0)
+    }
+
+    private func label(for store: AgentStateStore<AgentStateStoreTests.RoomState>) -> String {
+        let room = store.identity?.name ?? "?"
+        let stateRoom = store.state?.room ?? "?"
+        let count = store.state?.count ?? -1
+        return "\(room):\(stateRoom)=\(count)"
     }
 }

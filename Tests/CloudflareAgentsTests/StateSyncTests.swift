@@ -96,14 +96,14 @@ final class StateSyncTests: XCTestCase {
             host: "ws://localhost:\(port)"
         ))
 
-        var capturedState: CountState?
-        var capturedSource: StateSource?
+        let recorder = StateUpdateRecorder<CountState>()
         let updateExpectation = expectation(description: "onStateUpdate called")
 
         await client.onStateUpdate { state, source in
-            capturedState = state
-            capturedSource = source
-            updateExpectation.fulfill()
+            Task {
+                await recorder.record(state: state, source: source)
+                updateExpectation.fulfill()
+            }
         }
 
         await client.connect()
@@ -113,8 +113,9 @@ final class StateSyncTests: XCTestCase {
 
         await fulfillment(of: [updateExpectation], timeout: 2.0)
 
-        XCTAssertEqual(capturedState?.count, 99)
-        XCTAssertEqual(capturedSource, .client)
+        let update = await recorder.snapshot()
+        XCTAssertEqual(update.state?.count, 99)
+        XCTAssertEqual(update.source, .client)
 
         await client.disconnect()
     }
@@ -143,22 +144,23 @@ final class StateSyncTests: XCTestCase {
             host: "ws://localhost:\(port)"
         ))
 
-        var receivedState: CountState?
-        var receivedSource: StateSource?
+        let recorder = StateUpdateRecorder<CountState>()
         let updateExpectation = expectation(description: "state update from server")
 
         await client.onStateUpdate { state, source in
-            receivedState = state
-            receivedSource = source
-            updateExpectation.fulfill()
+            Task {
+                await recorder.record(state: state, source: source)
+                updateExpectation.fulfill()
+            }
         }
 
         await client.connect()
 
         await fulfillment(of: [updateExpectation], timeout: 2.0)
 
-        XCTAssertEqual(receivedState?.count, 55)
-        XCTAssertEqual(receivedSource, .server)
+        let update = await recorder.snapshot()
+        XCTAssertEqual(update.state?.count, 55)
+        XCTAssertEqual(update.source, .server)
 
         let localState = await client.state
         XCTAssertEqual(localState?.count, 55)
@@ -197,18 +199,21 @@ final class StateSyncTests: XCTestCase {
             host: "ws://localhost:\(port)"
         ))
 
-        var stateHistory: [Int] = []
+        let recorder = IntHistoryRecorder()
         let done = expectation(description: "received 3 state updates")
         done.expectedFulfillmentCount = 3
 
         await client.onStateUpdate { state, _ in
-            stateHistory.append(state.count)
-            done.fulfill()
+            Task {
+                await recorder.append(state.count)
+                done.fulfill()
+            }
         }
 
         await client.connect()
         await fulfillment(of: [done], timeout: 2.0)
 
+        let stateHistory = await recorder.values()
         XCTAssertEqual(stateHistory, [1, 2, 3])
 
         let final = await client.state
@@ -240,22 +245,63 @@ final class StateSyncTests: XCTestCase {
             host: "ws://localhost:\(port)"
         ))
 
-        var errorMessage: String?
+        let recorder = StringRecorder()
         let errorExpectation = expectation(description: "error received")
 
         await client.onError { error in
-            if let agentError = error as? AgentError,
-               case .rpcFailed(let msg) = agentError {
-                errorMessage = msg
+            Task {
+                if let agentError = error as? AgentError,
+                   case .rpcFailed(let msg) = agentError {
+                    await recorder.set(msg)
+                }
+                errorExpectation.fulfill()
             }
-            errorExpectation.fulfill()
         }
 
         await client.connect()
         await fulfillment(of: [errorExpectation], timeout: 2.0)
 
+        let errorMessage = await recorder.value()
         XCTAssertEqual(errorMessage, "Connection is readonly")
 
         await client.disconnect()
+    }
+}
+
+private actor StateUpdateRecorder<State: Sendable> {
+    private var state: State?
+    private var source: StateSource?
+
+    func record(state: State, source: StateSource) {
+        self.state = state
+        self.source = source
+    }
+
+    func snapshot() -> (state: State?, source: StateSource?) {
+        (state, source)
+    }
+}
+
+private actor IntHistoryRecorder {
+    private var storage: [Int] = []
+
+    func append(_ value: Int) {
+        storage.append(value)
+    }
+
+    func values() -> [Int] {
+        storage
+    }
+}
+
+private actor StringRecorder {
+    private var storage: String?
+
+    func set(_ value: String) {
+        storage = value
+    }
+
+    func value() -> String? {
+        storage
     }
 }

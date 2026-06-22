@@ -16,13 +16,43 @@ final class ChatProtocolTests: XCTestCase {
 
         XCTAssertEqual(json["type"] as? String, "cf_agent_use_chat_request")
         XCTAssertEqual(json["id"] as? String, "req-1")
-        XCTAssertTrue((json["body"] as? String)?.contains("hello") == true)
+        // Body must be wrapped in `init` (RequestInit) — the cloudflare/agents
+        // server reads `data.init.method` / `data.init.body`, never a top-level body.
+        XCTAssertNil(json["body"], "body must not be at the top level")
+        let initObj = try XCTUnwrap(json["init"] as? [String: Any])
+        XCTAssertEqual(initObj["method"] as? String, "POST")
+        XCTAssertTrue((initObj["body"] as? String)?.contains("hello") == true)
     }
 
     func testChatRequestAutoId() throws {
         let req = ChatRequest(body: "{}")
         XCTAssertFalse(req.id.isEmpty)
         XCTAssertEqual(req.type, .chatRequest)
+        XCTAssertEqual(req.requestInit.method, "POST")
+        XCTAssertEqual(req.requestInit.body, "{}")
+    }
+
+    /// The encoded frame must contain exactly `{ type, id, init: { method, body } }`
+    /// and round-trip back to the same values — this is the contract the
+    /// cloudflare/agents server (`data.init.method` / `data.init.body`) relies on.
+    func testChatRequestExactFrameAndRoundTrip() throws {
+        let payload = "{\"messages\":[{\"id\":\"user-1\",\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}]}"
+        let req = ChatRequest(id: "req-9", body: payload)
+        let data = try JSONEncoder().encode(req)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(Set(json.keys), ["type", "id", "init"], "frame must have exactly type/id/init")
+        let initObj = try XCTUnwrap(json["init"] as? [String: Any])
+        XCTAssertEqual(Set(initObj.keys), ["method", "body"])
+        XCTAssertEqual(initObj["method"] as? String, "POST")
+        XCTAssertEqual(initObj["body"] as? String, payload)
+
+        // Decoding back through the `init` CodingKey must restore the body verbatim.
+        let decoded = try JSONDecoder().decode(ChatRequest.self, from: data)
+        XCTAssertEqual(decoded.id, "req-9")
+        XCTAssertEqual(decoded.type, .chatRequest)
+        XCTAssertEqual(decoded.requestInit.method, "POST")
+        XCTAssertEqual(decoded.requestInit.body, payload)
     }
 
     // MARK: - ChatResponse decode
@@ -88,7 +118,11 @@ final class ChatProtocolTests: XCTestCase {
         let json = await captured.value
         XCTAssertEqual(json?["type"] as? String, "cf_agent_use_chat_request")
         XCTAssertEqual(json?["id"] as? String, "test-req-1")
-        XCTAssertEqual(json?["body"] as? String, "{\"messages\":[]}")
+        // Wire format must match the JS useAgentChat transport: { init: { method, body } }
+        XCTAssertNil(json?["body"], "body must be nested under init, not top-level")
+        let initObj = try XCTUnwrap(json?["init"] as? [String: Any])
+        XCTAssertEqual(initObj["method"] as? String, "POST")
+        XCTAssertEqual(initObj["body"] as? String, "{\"messages\":[]}")
 
         await client.disconnect()
     }

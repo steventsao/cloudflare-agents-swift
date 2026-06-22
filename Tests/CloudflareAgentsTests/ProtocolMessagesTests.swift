@@ -64,29 +64,33 @@ final class ProtocolMessagesTests: XCTestCase {
         )
         let client = AgentClient<CountState>(options: options)
 
-        var receivedIdentity = false
-        var receivedState = false
-        var stateValue: CountState?
+        let recorder = ProtocolMessageRecorder<CountState>()
+        let protocolExpectation = expectation(description: "identity and state received")
+        protocolExpectation.expectedFulfillmentCount = 2
 
         await client.onIdentity { name, agent in
-            XCTAssertEqual(name, "test-room")
-            XCTAssertEqual(agent, "chat-agent")
-            receivedIdentity = true
+            Task {
+                await recorder.recordIdentity(name: name, agent: agent)
+                protocolExpectation.fulfill()
+            }
         }
 
         await client.onStateUpdate { state, source in
-            stateValue = state
-            receivedState = true
+            Task {
+                await recorder.recordState(state, source: source)
+                protocolExpectation.fulfill()
+            }
         }
 
         await client.connect()
 
-        // Wait for all protocol messages to be processed
-        try await Task.sleep(nanoseconds: 300_000_000) // 300ms
+        await fulfillment(of: [protocolExpectation], timeout: 2.0)
 
-        XCTAssertTrue(receivedIdentity, "Should receive identity message")
-        XCTAssertTrue(receivedState, "Should receive state message")
-        XCTAssertEqual(stateValue?.count, 0)
+        let snapshot = await recorder.snapshot()
+        XCTAssertEqual(snapshot.identityName, "test-room")
+        XCTAssertEqual(snapshot.identityAgent, "chat-agent")
+        XCTAssertEqual(snapshot.state?.count, 0)
+        XCTAssertEqual(snapshot.source, .server)
 
         // Verify client.identified is true and state is set
         let identified = await client.identified
@@ -186,20 +190,56 @@ final class ProtocolMessagesTests: XCTestCase {
         ))
 
         let messageExpectation = expectation(description: "Unhandled message received")
-        var received: String?
+        let recorder = StringMessageRecorder()
 
         await client.onUnhandledMessage { message in
-            received = message
-            messageExpectation.fulfill()
+            Task {
+                await recorder.set(message)
+                messageExpectation.fulfill()
+            }
         }
 
         await client.connect()
         await fulfillment(of: [messageExpectation], timeout: 2.0)
 
+        let received = await recorder.value()
         XCTAssertTrue(received?.contains("\"type\":\"task.queued\"") == true)
         XCTAssertTrue(received?.contains("\"id\":\"task_123\"") == true)
 
         await client.disconnect()
+    }
+}
+
+private actor ProtocolMessageRecorder<State: Sendable> {
+    private var identityName: String?
+    private var identityAgent: String?
+    private var state: State?
+    private var source: StateSource?
+
+    func recordIdentity(name: String, agent: String) {
+        identityName = name
+        identityAgent = agent
+    }
+
+    func recordState(_ state: State, source: StateSource) {
+        self.state = state
+        self.source = source
+    }
+
+    func snapshot() -> (identityName: String?, identityAgent: String?, state: State?, source: StateSource?) {
+        (identityName, identityAgent, state, source)
+    }
+}
+
+private actor StringMessageRecorder {
+    private var storage: String?
+
+    func set(_ value: String) {
+        storage = value
+    }
+
+    func value() -> String? {
+        storage
     }
 }
 

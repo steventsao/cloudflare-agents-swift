@@ -44,7 +44,9 @@ public actor AgentClient<State: Codable & Sendable> {
     private var pendingStreamChunks: [String: (AnyCodable?) -> Void] = [:]
     private var pendingTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var onStateUpdate: (@Sendable (State, StateSource) -> Void)?
+    private var onStateError: (@Sendable (String) -> Void)?
     private var onIdentity: (@Sendable (String, String) -> Void)?
+    private var onIdentityChange: (@Sendable (String, String, String, String) -> Void)?
     private var onUnhandledMessage: (@Sendable (String) -> Void)?
     private var onError: (@Sendable (Error) -> Void)?
     private var onConnectionStateChange: (@Sendable (AgentConnectionState) -> Void)?
@@ -127,6 +129,14 @@ public actor AgentClient<State: Codable & Sendable> {
 
         self.baseURL = components.url!
         self.session = URLSession(configuration: .default)
+    }
+
+    deinit {
+        // Release the URLSession (and its delegate queue/threads) once the client
+        // is gone. URLSession retains itself until invalidated, so without this a
+        // long-lived process that creates many short-lived clients — or a test
+        // suite spinning up one client per case — leaks sessions and their threads.
+        session.invalidateAndCancel()
     }
 
     // MARK: - Lifecycle
@@ -305,6 +315,48 @@ public actor AgentClient<State: Codable & Sendable> {
         }
     }
 
+    /// Call a *streaming* method on the server agent.
+    ///
+    /// Mirrors the JS client's `call(method, args, { stream: { onChunk, onDone, onError } })`:
+    /// every intermediate RPC response (`done: false`) is delivered to `onChunk`,
+    /// the final response (`done: true`, or a non-streaming response with no
+    /// `done` field) resolves this call with its result (the JS `onDone`), and a
+    /// failure throws (the JS `onError`). An optional `timeout` rejects the call
+    /// if no terminal response arrives in time.
+    public func call(
+        _ method: String,
+        args: [AnyCodable] = [],
+        timeout: TimeInterval? = nil,
+        onChunk: @escaping @Sendable (AnyCodable?) -> Void
+    ) async throws -> AnyCodable? {
+        let request = RPCRequest(method: method, args: args)
+        let data = try JSONEncoder().encode(request)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw AgentError.encodingFailed
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingCalls[request.id] = continuation
+            pendingStreamChunks[request.id] = onChunk
+
+            if let timeout {
+                let timeoutTask = Task { [weak self] in
+                    let nanoseconds = UInt64(max(timeout, 0) * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: nanoseconds)
+                    guard !Task.isCancelled else { return }
+                    await self?.timeoutCall(id: request.id, method: method, seconds: timeout)
+                }
+                pendingTimeoutTasks[request.id] = timeoutTask
+            }
+
+            webSocketTask?.send(.string(json)) { [weak self] error in
+                if let error {
+                    Task { await self?.rejectCall(id: request.id, error: error) }
+                }
+            }
+        }
+    }
+
     // MARK: - Callbacks
 
     public func onStateUpdate(_ handler: @escaping @Sendable (State, StateSource) -> Void) {
@@ -313,6 +365,23 @@ public actor AgentClient<State: Codable & Sendable> {
 
     public func onIdentity(_ handler: @escaping @Sendable (String, String) -> Void) {
         self.onIdentity = handler
+    }
+
+    /// Called when the server reports a *different* identity on reconnect — the
+    /// instance name and/or the agent class changed. Mirrors the JS client's
+    /// `onIdentityChange(oldName, newName, oldAgent, newAgent)`. This happens
+    /// with server-side routing (e.g. `basePath` + `getAgentByName`) where the
+    /// instance is resolved from auth/session rather than the client-supplied name.
+    public func onIdentityChange(_ handler: @escaping @Sendable (String, String, String, String) -> Void) {
+        self.onIdentityChange = handler
+    }
+
+    /// Called when a state update is rejected by the server (e.g. the connection
+    /// is readonly). Mirrors the JS client's `onStateUpdateError`. The latest
+    /// server snapshot is also re-broadcast via `onStateUpdate(_, .server)` so
+    /// observers can reconcile rejected optimistic state.
+    public func onStateError(_ handler: @escaping @Sendable (String) -> Void) {
+        self.onStateError = handler
     }
 
     public func onError(_ handler: @escaping @Sendable (Error) -> Void) {
@@ -456,6 +525,15 @@ public actor AgentClient<State: Codable & Sendable> {
         case MessageType.identity.rawValue:
             let name = json["name"] as? String ?? instanceName
             let agent = json["agent"] as? String ?? agentName
+
+            // Detect identity change on reconnect (mirrors JS AgentClient): if we
+            // already had an identity and the server now reports a different
+            // instance/agent, notify before adopting the new (authoritative) values.
+            if let oldName = previousName, let oldAgent = previousAgent,
+               oldName != name || oldAgent != agent {
+                onIdentityChange?(oldName, name, oldAgent, agent)
+            }
+
             identified = true
             connectionState = .identified(name: name, agent: agent)
             onIdentity?(name, agent)
@@ -481,6 +559,7 @@ public actor AgentClient<State: Codable & Sendable> {
                     state = lastServerState
                     onStateUpdate?(lastServerState, .server)
                 }
+                onStateError?(errorMsg)
                 onError?(AgentError.rpcFailed(errorMsg))
             }
 
@@ -561,6 +640,7 @@ public actor AgentClient<State: Codable & Sendable> {
     private func rejectCall(id: String, error: Error) {
         if let continuation = pendingCalls.removeValue(forKey: id) {
             pendingTimeoutTasks.removeValue(forKey: id)?.cancel()
+            pendingStreamChunks.removeValue(forKey: id)
             continuation.resume(throwing: error)
         }
     }

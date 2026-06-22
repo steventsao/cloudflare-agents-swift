@@ -4,6 +4,8 @@ Swift client for the [Cloudflare Agents SDK](https://github.com/cloudflare/agent
 
 Mirrors the TypeScript `AgentClient` — connects to a Cloudflare Durable Object agent over WebSocket and handles the full wire protocol: identity handshake, state synchronization, RPC calls (including streaming), and auto-reconnect with exponential backoff.
 
+**Compatibility:** tracks [`cloudflare/agents`](https://github.com/cloudflare/agents) **v0.8.5**. The package version mirrors the upstream `agents` release it targets, so pin the client to the same version as the agent running on your Worker.
+
 ## Usage
 
 ```swift
@@ -46,6 +48,35 @@ try await store.setState(MyState(count: 42))
 let result = try await store.call("incrementCount", args: [])
 ```
 
+Create one store per agent instance, matching the TypeScript `useAgent` pattern
+where each hook instance owns its own socket, identity, state, and errors:
+
+```swift
+struct DashboardView: View {
+    @StateObject private var left = AgentStateStore<PanelState>(options: .init(
+        agent: "PanelAgent",
+        name: "left-room",
+        host: "https://my-worker.example.com"
+    ))
+    @StateObject private var right = AgentStateStore<PanelState>(options: .init(
+        agent: "PanelAgent",
+        name: "right-room",
+        host: "https://my-worker.example.com"
+    ))
+
+    var body: some View {
+        HStack {
+            Text(left.state?.title ?? "Left")
+            Text(right.state?.title ?? "Right")
+        }
+        .task {
+            await left.connect()
+            await right.connect()
+        }
+    }
+}
+```
+
 ## Installation
 
 Add to your `Package.swift`:
@@ -68,6 +99,20 @@ dependencies: [
 - `basePath` routing for non-standard agent URLs
 - Swift concurrency (`actor`-based, `Sendable`-safe)
 - Main-actor `AgentStateStore` adapter with `@Published` state, identity, connection, and error properties
+- Multiple `AgentStateStore` instances in one view/model, each with independent socket, identity, state, and errors
+
+## Scope
+
+This package is a Swift port of Cloudflare's TypeScript Agents client, not a
+BYOT app SDK. Additions should map to one of:
+
+- A Cloudflare Agents wire-protocol message.
+- A TypeScript `AgentClient` or `useAgent` behavior.
+- A compatibility test against the Cloudflare Agents server contract.
+
+Keep app workflows, model routing, UI state, and product-specific naming in the
+app layer. Use BYOT requirements only as concrete compatibility cases that
+exercise the generic client.
 
 ## State rejection reconciliation
 
@@ -97,7 +142,11 @@ Wire format matches the [cloudflare/agents](https://github.com/cloudflare/agents
 | `cf_agent_state` | bidirectional | State sync |
 | `cf_agent_state_error` | server -> client | Rejected state mutation |
 | `cf_agent_mcp_servers` | server -> client | MCP server list |
-| `rpc` | bidirectional | Remote procedure calls |
+| `rpc` | bidirectional | Remote procedure calls (incl. streaming chunks) |
+| `cf_agent_use_chat_request` | client -> server | Chat turn, body wrapped in `init` (see below) |
+| `cf_agent_use_chat_response` | server -> client | Streaming chat response chunk |
+| `cf_agent_chat_messages` | server -> client | Full chat message list broadcast |
+| `cf_agent_chat_clear` | bidirectional | Clear chat history |
 
 ## Interop note: your `State` must emit explicit `null`
 
@@ -124,6 +173,33 @@ public func encode(to encoder: Encoder) throws {
 
 (Raw WS libraries like Starscream don't help — they only move bytes. Even `supabase-swift`
 centralizes encoder *config* in a shared factory but still expresses null-emission per model.)
+
+## Interop note: chat requests are wrapped in `init`
+
+The `cf_agent_use_chat_request` frame carries the encoded request payload under an
+`init` key shaped like a `RequestInit`, **not** at the top level. The server reads
+`data.init.method === "POST"` and then `const { body } = data.init` (see the
+cloudflare/agents `ws-chat-transport.ts` and `AIChatAgent` message handler), so the
+wire frame must be:
+
+```json
+{ "type": "cf_agent_use_chat_request", "id": "…", "init": { "method": "POST", "body": "<json>" } }
+```
+
+`sendChatRequest(body:)` produces exactly this frame. A top-level `body` would be
+ignored by an upstream `AIChatAgent`. The chat *response* (`cf_agent_use_chat_response`)
+keeps `body` at the top level — that asymmetry matches the upstream protocol.
+
+## Client callbacks mirrored from the TypeScript client
+
+- `onStateUpdate(state, source)` — server broadcasts and optimistic client `setState`.
+- `onStateError(message)` — rejected state mutation (JS `onStateUpdateError`); the last
+  server snapshot is also re-broadcast so observers can reconcile.
+- `onIdentity(name, agent)` — identity handshake on every (re)connect.
+- `onIdentityChange(oldName, newName, oldAgent, newAgent)` — fires when the server reports
+  a *different* instance/agent on reconnect (e.g. `basePath` + `getAgentByName` routing).
+- Streaming RPC: `call(method, args:, timeout:, onChunk:)` delivers intermediate
+  `done: false` chunks to `onChunk` and resolves with the terminal result (JS `stream.onChunk` + `onDone`).
 
 ## Application Integration TODO
 

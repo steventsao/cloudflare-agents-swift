@@ -78,17 +78,41 @@ public struct McpServersMessage: Codable, Sendable {
     public let servers: [McpServerInfo]
 }
 
-/// Chat request sent by client (ai-chat protocol)
+/// Chat request sent by client (ai-chat protocol).
+///
+/// Mirrors the JS `useAgentChat` transport frame: the encoded request payload
+/// is wrapped in a `RequestInit`-shaped object under the `init` key. The
+/// cloudflare/agents server reads `data.init.method === "POST"` and then
+/// `const { body } = data.init` (see ai-chat `ws-chat-transport.ts` and
+/// `AIChatAgent.onMessage`), so the body MUST live at `init.body`, not at the
+/// top level.
 public struct ChatRequest: Codable, Sendable {
+    /// `RequestInit`-shaped wrapper carrying the HTTP method and encoded body.
+    public struct RequestInit: Codable, Sendable {
+        public let method: String
+        public let body: String
+
+        public init(method: String = "POST", body: String) {
+            self.method = method
+            self.body = body
+        }
+    }
+
     public let type: MessageType
     public let id: String
-    /// Encoded RequestInit body (JSON string of the request)
-    public let body: String
+    /// Encoded RequestInit (JSON string of the request lives in `requestInit.body`).
+    public let requestInit: RequestInit
 
-    public init(id: String = UUID().uuidString.lowercased(), body: String) {
+    public init(id: String = UUID().uuidString.lowercased(), body: String, method: String = "POST") {
         self.type = .chatRequest
         self.id = id
-        self.body = body
+        self.requestInit = RequestInit(method: method, body: body)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case id
+        case requestInit = "init"
     }
 }
 

@@ -56,11 +56,10 @@ final class NoProtocolModeTests: XCTestCase {
             query: ["protocol": "false"]
         ))
 
-        var identityReceived = false
-        var stateReceived = false
+        let recorder = NoProtocolEventRecorder()
 
-        await client.onIdentity { _, _ in identityReceived = true }
-        await client.onStateUpdate { _, _ in stateReceived = true }
+        await client.onIdentity { _, _ in Task { await recorder.recordIdentity() } }
+        await client.onStateUpdate { _, _ in Task { await recorder.recordState() } }
 
         await client.connect()
 
@@ -68,8 +67,9 @@ final class NoProtocolModeTests: XCTestCase {
         try await Task.sleep(nanoseconds: 300_000_000) // 300ms
 
         // In no-protocol mode, server never sends these
-        XCTAssertFalse(identityReceived, "Should NOT receive identity in no-protocol mode")
-        XCTAssertFalse(stateReceived, "Should NOT receive state in no-protocol mode")
+        let events = await recorder.snapshot()
+        XCTAssertFalse(events.identityReceived, "Should NOT receive identity in no-protocol mode")
+        XCTAssertFalse(events.stateReceived, "Should NOT receive state in no-protocol mode")
 
         // But RPC should still work
         let result = try await client.call("getState", args: [])
@@ -182,5 +182,22 @@ final class NoProtocolModeTests: XCTestCase {
         let queryItems = Set(components.queryItems?.map { "\($0.name)=\($0.value!)" } ?? [])
         XCTAssertTrue(queryItems.contains("protocol=false"))
         XCTAssertTrue(queryItems.contains("readonly=true"))
+    }
+}
+
+private actor NoProtocolEventRecorder {
+    private var identityReceived = false
+    private var stateReceived = false
+
+    func recordIdentity() {
+        identityReceived = true
+    }
+
+    func recordState() {
+        stateReceived = true
+    }
+
+    func snapshot() -> (identityReceived: Bool, stateReceived: Bool) {
+        (identityReceived, stateReceived)
     }
 }

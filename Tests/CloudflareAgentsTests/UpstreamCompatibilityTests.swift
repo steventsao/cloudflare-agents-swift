@@ -123,6 +123,30 @@ final class UpstreamCompatibilityTests: XCTestCase {
         await client.disconnect()
     }
 
+    func testStreamingChunksArriveFromUpstreamWorker() async throws {
+        let host = try workerURL()
+        let client = AgentClient<CallableState>(options: .init(
+            agent: "TestCallableAgent",
+            name: room("stream"),
+            host: host
+        ))
+
+        await client.connect()
+        await client.waitForReady()
+
+        let collector = StringChunkCollector()
+        // streamNumbers(n) streams intermediate chunks and resolves with n.
+        let final = try await client.call("streamNumbers", args: [3], timeout: 5.0) { chunk in
+            collector.append(chunk.map { "\($0.value)" })
+        }
+        XCTAssertEqual(final?.value as? Int, 3)
+
+        let chunks = collector.values
+        XCTAssertFalse(chunks.isEmpty, "Expected at least one streaming chunk from the upstream worker")
+
+        await client.disconnect()
+    }
+
     func testNoProtocolConnectionSuppressesHandshakeButKeepsRPC() async throws {
         let host = try workerURL()
         let client = AgentClient<CountState>(options: .init(
