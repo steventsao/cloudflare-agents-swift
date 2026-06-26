@@ -88,6 +88,127 @@ final class ClientTimeoutTests: XCTestCase {
         await client.disconnect()
     }
 
+    func testDefaultCallTimeoutRejectsWhenServerNeverResponds() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = server.port!
+
+        server.onConnect = { conn in
+            conn.startEchoing(handler: { _ in nil })
+        }
+
+        struct EmptyS: Codable, Sendable {}
+        let client = AgentClient<EmptyS>(options: .init(
+            agent: "my-agent",
+            name: "room",
+            host: "ws://localhost:\(port)",
+            defaultCallTimeout: 0.2
+        ))
+        await client.connect()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        do {
+            _ = try await client.call("slowByDefault", args: [])
+            XCTFail("Expected default timeout error")
+        } catch let error as AgentError {
+            guard case .timeout(let method, let seconds) = error else {
+                return XCTFail("Expected .timeout, got \(error)")
+            }
+            XCTAssertEqual(method, "slowByDefault")
+            XCTAssertEqual(seconds, 0.2, accuracy: 0.05)
+        }
+
+        await client.disconnect()
+    }
+
+    func testDefaultCallTimeoutCanBeDisabled() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = server.port!
+
+        server.onConnect = { conn in
+            conn.startEchoing(handler: { _ in nil })
+        }
+
+        struct EmptyS: Codable, Sendable {}
+        let client = AgentClient<EmptyS>(options: .init(
+            agent: "my-agent",
+            name: "room",
+            host: "ws://localhost:\(port)",
+            defaultCallTimeout: 0
+        ))
+        await client.connect()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let captured = CapturedTimeoutError()
+        let callTask = Task {
+            do {
+                _ = try await client.call("waitUntilDisconnect", args: [])
+            } catch {
+                await captured.set(error)
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let pendingError = await captured.value
+        XCTAssertNil(pendingError, "Disabled default timeout should keep the call pending")
+
+        await client.disconnect()
+        await callTask.value
+
+        let error = await captured.value
+        guard let agentError = error as? AgentError, case .connectionClosed = agentError else {
+            return XCTFail("Expected disconnect to reject the pending call, got \(String(describing: error))")
+        }
+    }
+
+    func testExplicitZeroTimeoutDisablesTimeout() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = server.port!
+
+        server.onConnect = { conn in
+            conn.startEchoing(handler: { _ in nil })
+        }
+
+        struct EmptyS: Codable, Sendable {}
+        let client = AgentClient<EmptyS>(options: .init(
+            agent: "my-agent",
+            name: "room",
+            host: "ws://localhost:\(port)",
+            defaultCallTimeout: 0.1
+        ))
+        await client.connect()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let captured = CapturedTimeoutError()
+        let callTask = Task {
+            do {
+                _ = try await client.call("explicitlyNoTimeout", args: [], timeout: 0)
+            } catch {
+                await captured.set(error)
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let pendingError = await captured.value
+        XCTAssertNil(pendingError, "Explicit timeout 0 should disable the timeout")
+
+        await client.disconnect()
+        await callTask.value
+
+        let error = await captured.value
+        guard let agentError = error as? AgentError, case .connectionClosed = agentError else {
+            return XCTFail("Expected disconnect to reject the pending call, got \(String(describing: error))")
+        }
+    }
+
     func testCallWithZeroTimeoutRejectsImmediately() async throws {
         let server = MockWSServer()
         try await server.start()
@@ -230,5 +351,13 @@ final class ClientTimeoutTests: XCTestCase {
         } else {
             XCTFail("Expected connectionClosed error, got \(String(describing: callError))")
         }
+    }
+}
+
+private actor CapturedTimeoutError {
+    private(set) var value: Error?
+
+    func set(_ error: Error) {
+        value = error
     }
 }

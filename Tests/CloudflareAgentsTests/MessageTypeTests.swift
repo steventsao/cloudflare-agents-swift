@@ -12,6 +12,20 @@ final class MessageTypeTests: XCTestCase {
         XCTAssertEqual(MessageType.session.rawValue, "cf_agent_session")
         XCTAssertEqual(MessageType.sessionError.rawValue, "cf_agent_session_error")
         XCTAssertEqual(MessageType.rpc.rawValue, "rpc")
+        XCTAssertEqual(MessageType.chatRequest.rawValue, "cf_agent_use_chat_request")
+        XCTAssertEqual(MessageType.chatResponse.rawValue, "cf_agent_use_chat_response")
+        XCTAssertEqual(MessageType.chatMessages.rawValue, "cf_agent_chat_messages")
+        XCTAssertEqual(MessageType.chatClear.rawValue, "cf_agent_chat_clear")
+        XCTAssertEqual(MessageType.chatRequestCancel.rawValue, "cf_agent_chat_request_cancel")
+        XCTAssertEqual(MessageType.streamResuming.rawValue, "cf_agent_stream_resuming")
+        XCTAssertEqual(MessageType.streamResumeAck.rawValue, "cf_agent_stream_resume_ack")
+        XCTAssertEqual(MessageType.streamResumeRequest.rawValue, "cf_agent_stream_resume_request")
+        XCTAssertEqual(MessageType.streamResumeNone.rawValue, "cf_agent_stream_resume_none")
+        XCTAssertEqual(MessageType.streamPending.rawValue, "cf_agent_stream_pending")
+        XCTAssertEqual(MessageType.toolResult.rawValue, "cf_agent_tool_result")
+        XCTAssertEqual(MessageType.toolApproval.rawValue, "cf_agent_tool_approval")
+        XCTAssertEqual(MessageType.messageUpdated.rawValue, "cf_agent_message_updated")
+        XCTAssertEqual(MessageType.chatRecovering.rawValue, "cf_agent_chat_recovering")
     }
 
     func testIdentityMessageDecode() throws {

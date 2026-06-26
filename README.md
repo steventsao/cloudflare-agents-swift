@@ -4,7 +4,7 @@ Swift client for the [Cloudflare Agents SDK](https://github.com/cloudflare/agent
 
 Mirrors the TypeScript `AgentClient` — connects to a Cloudflare Durable Object agent over WebSocket and handles the full wire protocol: identity handshake, state synchronization, RPC calls (including streaming), and auto-reconnect with exponential backoff.
 
-**Compatibility:** tracks [`cloudflare/agents`](https://github.com/cloudflare/agents) **v0.8.5**. The package version mirrors the upstream `agents` release it targets, so pin the client to the same version as the agent running on your Worker.
+**Compatibility:** targets [`cloudflare/agents`](https://github.com/cloudflare/agents) **v0.17.0** for the Swift client/wire-protocol surface. Use the readiness score below to see what is fully ported versus intentionally out of scope for this package.
 
 ## Usage
 
@@ -147,6 +147,38 @@ Wire format matches the [cloudflare/agents](https://github.com/cloudflare/agents
 | `cf_agent_use_chat_response` | server -> client | Streaming chat response chunk |
 | `cf_agent_chat_messages` | server -> client | Full chat message list broadcast |
 | `cf_agent_chat_clear` | bidirectional | Clear chat history |
+| `cf_agent_chat_request_cancel` | client -> server | Cancel a chat request |
+| `cf_agent_stream_resuming` | server -> client | Chat stream resume hint |
+| `cf_agent_stream_resume_ack` | client -> server | Chat stream resume acknowledgement |
+| `cf_agent_stream_resume_request` | client -> server | Request chat stream resume |
+| `cf_agent_stream_resume_none` | server -> client | No resumable stream available |
+| `cf_agent_stream_pending` | server -> client | Accepted chat turn whose resumable stream has not started |
+| `cf_agent_tool_result` | client -> server | Client tool result |
+| `cf_agent_tool_approval` | client -> server | Client tool approval |
+| `cf_agent_message_updated` | server -> client | Message update hint |
+| `cf_agent_chat_recovering` | server -> client | Durable chat recovery hint |
+
+## Port Readiness
+
+This repo now tracks port progress in [`PortReadiness/port-readiness.json`](PortReadiness/port-readiness.json), with a scorer that separates the intended Swift client package from the full upstream npm SDK.
+
+```sh
+./scripts/port-readiness.mjs
+```
+
+Current score against `agents` v0.17.0:
+
+- `swiftClient`: **76.4%** - client/wire protocol target for this package.
+- `fullUpstreamSdk`: **35.4%** - the entire upstream npm package, including Workers server runtime, React, MCP server/client, workflows, email, browser, CLI, and other non-client surfaces.
+
+Common practice for moving the score up:
+
+- Add a readiness item or tighten an existing gap in the manifest.
+- Write or expand a local XCTest that proves the Swift behavior.
+- For wire compatibility, add or extend an `UpstreamCompatibilityTests` case and run it through `./scripts/test-upstream-compat.mjs`.
+- Only move an item to `ported` when it has both an upstream reference and local evidence.
+
+The largest current Swift-client gaps are typed sub-agent path composition, `agentFetch`, advanced resumable chat/client-tool orchestration, typed RPC stubs, and a typed MCP transport.
 
 ## Interop note: your `State` must emit explicit `null`
 
@@ -198,6 +230,9 @@ keeps `body` at the top level — that asymmetry matches the upstream protocol.
 - `onIdentity(name, agent)` — identity handshake on every (re)connect.
 - `onIdentityChange(oldName, newName, oldAgent, newAgent)` — fires when the server reports
   a *different* instance/agent on reconnect (e.g. `basePath` + `getAgentByName` routing).
+- `onConnectionError(error)` — terminal close reporting for upstream's 1008 and
+  4000...4999 close-code rule. Use `Options.shouldReconnectOnClose` to suppress
+  reconnects for additional close events.
 - Streaming RPC: `call(method, args:, timeout:, onChunk:)` delivers intermediate
   `done: false` chunks to `onChunk` and resolves with the terminal result (JS `stream.onChunk` + `onDone`).
 
@@ -212,7 +247,7 @@ Keep this package generic. For app-level realtime workflow UI, add integration i
 
 ## Tests
 
-Tests cover connection lifecycle, state round-trips, RPC with mixed types, streaming, reconnection, malformed message resilience, and no-protocol mode.
+Tests cover connection lifecycle, state round-trips, RPC with mixed types, streaming, reconnection, malformed message resilience, no-protocol mode, chat/MCP/session protocol frames, and the port-readiness manifest.
 
 ```sh
 swift test

@@ -1,4 +1,5 @@
 import XCTest
+import Network
 @testable import CloudflareAgents
 
 /// Thread-safe string collector for connection state transition tracking
@@ -312,6 +313,17 @@ final class ConnectionLifecycleTests: XCTestCase {
 
     // MARK: - Error callback on connection failure
 
+    func testTerminalCloseCodeClassifierMatchesUpstream() {
+        XCTAssertTrue(isTerminalCloseCode(1008))
+        XCTAssertTrue(isTerminalCloseCode(4000))
+        XCTAssertTrue(isTerminalCloseCode(4999))
+
+        XCTAssertFalse(isTerminalCloseCode(1000))
+        XCTAssertFalse(isTerminalCloseCode(1001))
+        XCTAssertFalse(isTerminalCloseCode(3999))
+        XCTAssertFalse(isTerminalCloseCode(5000))
+    }
+
     func testErrorCallbackFiresOnConnectionLoss() async throws {
         let server = MockWSServer()
         try await server.start()
@@ -346,4 +358,119 @@ final class ConnectionLifecycleTests: XCTestCase {
 
         await client.disconnect()
     }
+
+    func testShouldReconnectOnCloseCanSuppressNonTerminalReconnect() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = server.port!
+        let connectCounter = Counter()
+
+        server.onConnect = { conn in
+            Task { await connectCounter.increment() }
+            conn.send("""
+            {"type":"cf_agent_identity","name":"r","agent":"a"}
+            """)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+                conn.close(code: .protocolCode(.goingAway), reason: "restart")
+            }
+        }
+
+        let captured = CapturedCloseEvent()
+        let closeExpectation = expectation(description: "close classified")
+        let client = AgentClient<EmptyS>(options: .init(
+            agent: "a", name: "r",
+            host: "ws://localhost:\(port)",
+            shouldReconnectOnClose: { event in
+                Task { await captured.set(event) }
+                closeExpectation.fulfill()
+                return false
+            }
+        ))
+
+        await client.setAutoReconnect(true, maxDelay: 0.1)
+        await client.connect()
+        await fulfillment(of: [closeExpectation], timeout: 3.0)
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let event = await captured.value
+        XCTAssertEqual(event?.code, 1001)
+        XCTAssertEqual(event?.reason, "restart")
+        let connectionCount = await connectCounter.value
+        XCTAssertEqual(connectionCount, 1, "custom close classifier should suppress reconnect")
+        let connectionError = await client.connectionError
+        XCTAssertNil(connectionError, "non-terminal closes should not report AgentConnectionError")
+
+        await client.disconnect()
+    }
+
+    func testTerminalCloseReportsConnectionErrorAndDoesNotReconnect() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = server.port!
+        let connectCounter = Counter()
+
+        server.onConnect = { conn in
+            Task { await connectCounter.increment() }
+            conn.send("""
+            {"type":"cf_agent_identity","name":"r","agent":"a"}
+            """)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+                conn.close(code: .protocolCode(.policyViolation), reason: "policy")
+            }
+        }
+
+        let client = AgentClient<EmptyS>(options: .init(
+            agent: "a", name: "r",
+            host: "ws://localhost:\(port)"
+        ))
+
+        await client.setAutoReconnect(true, maxDelay: 0.1)
+
+        let errorExpectation = expectation(description: "terminal connection error reported")
+        let captured = CapturedConnectionError()
+        await client.onConnectionError { error in
+            Task { await captured.set(error) }
+            errorExpectation.fulfill()
+        }
+
+        await client.connect()
+        await fulfillment(of: [errorExpectation], timeout: 3.0)
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let error = await captured.value
+        XCTAssertEqual(error?.name, "AgentConnectionError")
+        XCTAssertEqual(error?.code, 1008)
+        XCTAssertEqual(error?.reason, "policy")
+        let clientConnectionError = await client.connectionError
+        XCTAssertNotNil(clientConnectionError)
+        let connectionCount = await connectCounter.value
+        XCTAssertEqual(connectionCount, 1, "terminal closes must not auto-reconnect")
+
+        do {
+            _ = try await client.call("add", args: [1, 2], timeout: 0.1)
+            XCTFail("Expected calls after terminal close to throw")
+        } catch AgentError.connectionClosed {
+            // Expected.
+        } catch {
+            XCTFail("Expected connectionClosed after terminal close, got \(error)")
+        }
+
+        await client.disconnect()
+    }
+}
+
+actor CapturedConnectionError {
+    var value: AgentConnectionError?
+    func set(_ error: AgentConnectionError) { value = error }
+}
+
+actor CapturedCloseEvent {
+    var value: AgentConnectionCloseEvent?
+    func set(_ event: AgentConnectionCloseEvent) { value = event }
 }

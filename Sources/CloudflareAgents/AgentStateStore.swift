@@ -27,6 +27,7 @@ public final class AgentStateStore<State: Codable & Sendable>: ObservableObject 
     @Published public private(set) var lastStateSource: StateSource?
     @Published public private(set) var lastError: Error?
     @Published public private(set) var lastStateError: String?
+    @Published public private(set) var connectionError: AgentConnectionError?
     @Published public private(set) var mcpServers: [McpServerInfo] = []
 
     private var callbacksInstalled = false
@@ -75,6 +76,7 @@ public final class AgentStateStore<State: Codable & Sendable>: ObservableObject 
     public func clearError() {
         lastError = nil
         lastStateError = nil
+        connectionError = nil
     }
 
     private func installCallbacksIfNeeded() async {
@@ -87,6 +89,7 @@ public final class AgentStateStore<State: Codable & Sendable>: ObservableObject 
                 if case .identified(let name, let agent) = newState {
                     self?.identity = AgentIdentity(name: name, agent: agent)
                     self?.identified = true
+                    self?.connectionError = nil
                 } else if case .disconnected = newState {
                     self?.identified = false
                 }
@@ -118,6 +121,13 @@ public final class AgentStateStore<State: Codable & Sendable>: ObservableObject 
                    case .rpcFailed(let message) = agentError {
                     self?.lastStateError = message
                 }
+            }
+        }
+
+        await client.onConnectionError { [weak self] error in
+            Task { @MainActor in
+                self?.connectionError = error
+                self?.lastError = error
             }
         }
 

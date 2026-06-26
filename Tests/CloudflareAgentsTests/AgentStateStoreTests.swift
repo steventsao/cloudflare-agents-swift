@@ -1,4 +1,5 @@
 import XCTest
+import Network
 @testable import CloudflareAgents
 
 @MainActor
@@ -287,6 +288,42 @@ final class AgentStateStoreTests: XCTestCase {
         store.clearError()
         XCTAssertNil(store.lastError)
         XCTAssertNil(store.lastStateError)
+
+        await store.disconnect()
+    }
+
+    func testTerminalConnectionErrorMirrorsIntoStore() async throws {
+        let server = MockWSServer()
+        try await server.start()
+        defer { server.stop() }
+
+        let port = try XCTUnwrap(server.port)
+        server.onConnect = { conn in
+            conn.send("""
+            {"type":"cf_agent_identity","name":"room","agent":"test-agent"}
+            """)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+                conn.close(code: .protocolCode(.policyViolation), reason: "policy")
+            }
+        }
+
+        let store = AgentStateStore<CountState>(options: .init(
+            agent: "TestAgent",
+            name: "room",
+            host: "ws://localhost:\(port)"
+        ))
+
+        await store.connect()
+
+        try await waitUntil("store mirrors terminal connection error") {
+            store.connectionError?.code == 1008 &&
+                store.connectionError?.reason == "policy" &&
+                store.lastError is AgentConnectionError
+        }
+
+        store.clearError()
+        XCTAssertNil(store.connectionError)
+        XCTAssertNil(store.lastError)
 
         await store.disconnect()
     }

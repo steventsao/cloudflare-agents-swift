@@ -332,6 +332,23 @@ final class MockWSConnection: @unchecked Sendable {
         connection.cancel()
     }
 
+    func close(code: NWProtocolWebSocket.CloseCode, reason: String? = nil) {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = code
+        let context = NWConnection.ContentContext(
+            identifier: "ws-close",
+            metadata: [metadata]
+        )
+        connection.send(
+            content: reason?.data(using: .utf8),
+            contentContext: context,
+            isComplete: true,
+            completion: .contentProcessed { [weak self] _ in
+                self?.connection.cancel()
+            }
+        )
+    }
+
     private func receiveLoop() {
         connection.receiveMessage { [weak self] data, context, isComplete, error in
             guard let self else { return }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,8 +23,17 @@ let wranglerURL;
 try {
   wranglerURL = pathToFileURL(requireFromUpstream.resolve("wrangler")).href;
 } catch {
-  console.error(`Missing npm dependencies in ${upstreamRoot}`);
-  console.error(`Run: cd ${upstreamRoot} && npm install`);
+  let installCommand = "npm install";
+  try {
+    const rootPackage = JSON.parse(readFileSync(upstreamPackageJSON, "utf8"));
+    if (typeof rootPackage.packageManager === "string" && rootPackage.packageManager.startsWith("pnpm@")) {
+      installCommand = "pnpm install";
+    }
+  } catch {
+    // Keep the generic npm fallback when package.json cannot be read.
+  }
+  console.error(`Missing Node dependencies in ${upstreamRoot}`);
+  console.error(`Run: cd ${upstreamRoot} && ${installCommand}`);
   process.exit(1);
 }
 

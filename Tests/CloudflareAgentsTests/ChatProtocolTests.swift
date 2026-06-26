@@ -80,6 +80,98 @@ final class ChatProtocolTests: XCTestCase {
         XCTAssertEqual(resp.replay, false)
     }
 
+    // MARK: - Current chat protocol control frames
+
+    func testChatRequestCancelEncode() throws {
+        let cancel = ChatRequestCancelMessage(id: "req-1")
+        let data = try JSONEncoder().encode(cancel)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(json["type"] as? String, "cf_agent_chat_request_cancel")
+        XCTAssertEqual(json["id"] as? String, "req-1")
+    }
+
+    func testChatStreamResumeAckRoundTrip() throws {
+        let ack = ChatStreamResumeAckMessage(id: "req-2")
+        let data = try JSONEncoder().encode(ack)
+        let decoded = try JSONDecoder().decode(ChatStreamResumeAckMessage.self, from: data)
+
+        XCTAssertEqual(decoded.type, .streamResumeAck)
+        XCTAssertEqual(decoded.id, "req-2")
+    }
+
+    func testChatNoPayloadControlMessagesDecode() throws {
+        let controlTypes: [(MessageType, String)] = [
+            (.streamResuming, "cf_agent_stream_resuming"),
+            (.streamResumeRequest, "cf_agent_stream_resume_request"),
+            (.streamResumeNone, "cf_agent_stream_resume_none"),
+            (.streamPending, "cf_agent_stream_pending"),
+            (.messageUpdated, "cf_agent_message_updated"),
+            (.chatRecovering, "cf_agent_chat_recovering"),
+        ]
+
+        for (expectedType, wireType) in controlTypes {
+            let data = #"{"type":"\#(wireType)"}"#.data(using: .utf8)!
+            let decoded = try JSONDecoder().decode(ChatControlMessage.self, from: data)
+            XCTAssertEqual(decoded.type, expectedType)
+        }
+    }
+
+    func testChatStreamPendingFrameIncludesOptionalId() throws {
+        let withID = #"{"type":"cf_agent_stream_pending","id":"req-1"}"#.data(using: .utf8)!
+        let decodedWithID = try JSONDecoder().decode(ChatStreamPendingMessage.self, from: withID)
+
+        XCTAssertEqual(decodedWithID.type, .streamPending)
+        XCTAssertEqual(decodedWithID.id, "req-1")
+
+        let withoutID = #"{"type":"cf_agent_stream_pending"}"#.data(using: .utf8)!
+        let decodedWithoutID = try JSONDecoder().decode(ChatStreamPendingMessage.self, from: withoutID)
+
+        XCTAssertEqual(decodedWithoutID.type, .streamPending)
+        XCTAssertNil(decodedWithoutID.id)
+    }
+
+    func testChatToolResultRoundTrip() throws {
+        let result = ChatToolResultMessage(
+            toolCallId: "tc-1",
+            toolName: "getWeather",
+            output: ["temp": 72, "unit": "f"],
+            state: "output-available",
+            autoContinue: true,
+            clientTools: [
+                ChatClientToolSchema(
+                    name: "pickCity",
+                    description: "Choose a city",
+                    parameters: ["type": "object"]
+                )
+            ]
+        )
+
+        let data = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(ChatToolResultMessage.self, from: data)
+
+        XCTAssertEqual(decoded.type, .toolResult)
+        XCTAssertEqual(decoded.toolCallId, "tc-1")
+        XCTAssertEqual(decoded.toolName, "getWeather")
+        XCTAssertEqual(decoded.state, "output-available")
+        XCTAssertEqual(decoded.autoContinue, true)
+        XCTAssertEqual(decoded.clientTools?.first?.name, "pickCity")
+        let output = try XCTUnwrap(decoded.output?.value as? [String: Any])
+        XCTAssertEqual(output["temp"] as? Int, 72)
+        XCTAssertEqual(output["unit"] as? String, "f")
+    }
+
+    func testChatToolApprovalRoundTrip() throws {
+        let approval = ChatToolApprovalMessage(toolCallId: "tc-2", approved: true, autoContinue: false)
+        let data = try JSONEncoder().encode(approval)
+        let decoded = try JSONDecoder().decode(ChatToolApprovalMessage.self, from: data)
+
+        XCTAssertEqual(decoded.type, .toolApproval)
+        XCTAssertEqual(decoded.toolCallId, "tc-2")
+        XCTAssertTrue(decoded.approved)
+        XCTAssertEqual(decoded.autoContinue, false)
+    }
+
     // MARK: - sendChatRequest sends correct JSON over WS
 
     func testSendChatRequestSendsToServer() async throws {

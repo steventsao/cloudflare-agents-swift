@@ -15,6 +15,16 @@ public enum MessageType: String, Codable, Sendable {
     case chatResponse = "cf_agent_use_chat_response"
     case chatMessages = "cf_agent_chat_messages"
     case chatClear = "cf_agent_chat_clear"
+    case chatRequestCancel = "cf_agent_chat_request_cancel"
+    case streamResuming = "cf_agent_stream_resuming"
+    case streamResumeAck = "cf_agent_stream_resume_ack"
+    case streamResumeRequest = "cf_agent_stream_resume_request"
+    case streamResumeNone = "cf_agent_stream_resume_none"
+    case streamPending = "cf_agent_stream_pending"
+    case toolResult = "cf_agent_tool_result"
+    case toolApproval = "cf_agent_tool_approval"
+    case messageUpdated = "cf_agent_message_updated"
+    case chatRecovering = "cf_agent_chat_recovering"
 }
 
 /// Identity message sent by server on connect
@@ -125,6 +135,107 @@ public struct ChatResponse: Codable, Sendable {
     public let error: Bool?
     public let continuation: Bool?
     public let replay: Bool?
+}
+
+/// Cancel an in-flight chat request.
+public struct ChatRequestCancelMessage: Codable, Sendable {
+    public let type: MessageType
+    public let id: String
+
+    public init(id: String) {
+        self.type = .chatRequestCancel
+        self.id = id
+    }
+}
+
+/// A stream resume acknowledgement for resumable chat streams.
+public struct ChatStreamResumeAckMessage: Codable, Sendable {
+    public let type: MessageType
+    public let id: String
+
+    public init(id: String) {
+        self.type = .streamResumeAck
+        self.id = id
+    }
+}
+
+/// A stream-pending hint for resumable chat handshakes.
+public struct ChatStreamPendingMessage: Codable, Sendable {
+    public let type: MessageType
+    public let id: String?
+
+    public init(id: String? = nil) {
+        self.type = .streamPending
+        self.id = id
+    }
+}
+
+/// A no-payload chat protocol control frame.
+public struct ChatControlMessage: Codable, Sendable {
+    public let type: MessageType
+
+    public init(type: MessageType) {
+        self.type = type
+    }
+}
+
+/// Wire-format client tool schema used by the chat protocol.
+public struct ChatClientToolSchema: Codable, Sendable {
+    public let name: String
+    public let description: String?
+    public let parameters: AnyCodable?
+
+    public init(name: String, description: String? = nil, parameters: AnyCodable? = nil) {
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+    }
+}
+
+/// Result returned by a client-side tool invocation.
+public struct ChatToolResultMessage: Codable, Sendable {
+    public let type: MessageType
+    public let toolCallId: String
+    public let toolName: String?
+    public let output: AnyCodable?
+    public let state: String?
+    public let errorText: String?
+    public let autoContinue: Bool?
+    public let clientTools: [ChatClientToolSchema]?
+
+    public init(
+        toolCallId: String,
+        toolName: String? = nil,
+        output: AnyCodable? = nil,
+        state: String? = nil,
+        errorText: String? = nil,
+        autoContinue: Bool? = nil,
+        clientTools: [ChatClientToolSchema]? = nil
+    ) {
+        self.type = .toolResult
+        self.toolCallId = toolCallId
+        self.toolName = toolName
+        self.output = output
+        self.state = state
+        self.errorText = errorText
+        self.autoContinue = autoContinue
+        self.clientTools = clientTools
+    }
+}
+
+/// Approval response for a tool call that requires human confirmation.
+public struct ChatToolApprovalMessage: Codable, Sendable {
+    public let type: MessageType
+    public let toolCallId: String
+    public let approved: Bool
+    public let autoContinue: Bool?
+
+    public init(toolCallId: String, approved: Bool, autoContinue: Bool? = nil) {
+        self.type = .toolApproval
+        self.toolCallId = toolCallId
+        self.approved = approved
+        self.autoContinue = autoContinue
+    }
 }
 
 /// Type-erased Codable wrapper for arbitrary JSON values

@@ -1,0 +1,403 @@
+{
+  "schemaVersion": 1,
+  "name": "cloudflare-agents-swift port readiness",
+  "generatedFrom": {
+    "upstreamPackage": "agents",
+    "upstreamRepository": "https://github.com/cloudflare/agents",
+    "upstreamVersion": "0.17.0",
+    "upstreamTag": "agents@0.17.0",
+    "upstreamCommit": "062611de3dcf9278c5759a959d408ed0d736b64d",
+    "checkedAt": "2026-06-26",
+    "notes": [
+      "npm dist-tag latest reported 0.17.0 on 2026-06-26.",
+      "The Swift package is primarily a client and wire-protocol port, not a full Cloudflare Workers Agents server SDK."
+    ]
+  },
+  "scorePolicy": {
+    "coverage": {
+      "1.0": "ported with local tests or compatibility tests",
+      "0.5": "partial implementation or declared wire shape without full behavior",
+      "0.0": "known gap"
+    },
+    "scopes": {
+      "swiftClient": "The intended Swift client package surface: WebSocket AgentClient, state, RPC, chat/MCP/session wire messages, SwiftUI-style store, and upstream compatibility harness.",
+      "fullUpstreamSdk": "The full agents npm package export surface at the checked upstream version, including server runtime, React, Workers-only integrations, MCP server/client, browser, email, workflows, skills, and CLI."
+    }
+  },
+  "items": [
+    {
+      "id": "target-version",
+      "title": "Tracks current upstream package version",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 2,
+      "upstreamRefs": ["packages/agents/package.json"],
+      "evidence": ["PortReadiness/port-readiness.json", "README.md"]
+    },
+    {
+      "id": "url-options",
+      "title": "AgentClient URL construction, basePath, path, query, and headers",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/react.tsx"],
+      "evidence": ["Tests/CloudflareAgentsTests/AgentClientTests.swift"]
+    },
+    {
+      "id": "websocket-lifecycle",
+      "title": "WebSocket connect/disconnect lifecycle, terminal close classification, and malformed message resilience",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.9,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/react-tests/client.test.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/ConnectionLifecycleTests.swift"],
+      "gap": "Terminal close handling is ported; PartySocket-specific buffering and browser socket replacement semantics are only partially mirrored."
+    },
+    {
+      "id": "identity-ready",
+      "title": "Identity handshake, ready wait, and identity change callback",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/client.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/ProtocolMessagesTests.swift", "Tests/CloudflareAgentsTests/IdentityChangeTests.swift"]
+    },
+    {
+      "id": "state-sync",
+      "title": "State sync, optimistic setState, and callback source",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 6,
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/types.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/StateSyncTests.swift", "Tests/CloudflareAgentsTests/StateRoundTripTests.swift"]
+    },
+    {
+      "id": "state-error",
+      "title": "State update error callback and reconciliation",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 3,
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/index.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/StateErrorCallbackTests.swift", "Tests/CloudflareAgentsTests/AgentStateStoreTests.swift"]
+    },
+    {
+      "id": "rpc-basic",
+      "title": "RPC request/response, args, result, error, nil, and nested JSON",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 6,
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/index.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/RPCRoundTripTests.swift", "Tests/CloudflareAgentsTests/StateRoundTripTests.swift"]
+    },
+    {
+      "id": "rpc-streaming",
+      "title": "RPC streaming chunks, final result, and streaming errors",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/client.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/StreamingRPCTests.swift", "Tests/CloudflareAgentsTests/RPCRoundTripTests.swift"]
+    },
+    {
+      "id": "rpc-timeouts",
+      "title": "Default and explicit RPC timeouts, including timeout 0 disabling",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 4,
+      "upstreamRefs": ["packages/agents/src/client.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/ClientTimeoutTests.swift"]
+    },
+    {
+      "id": "pending-rpc-buffering",
+      "title": "Pending RPC handling across disconnects and reconnects",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.55,
+      "weight": 4,
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/react.tsx", "packages/agents/src/react-tests/client.test.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/ClientTimeoutTests.swift", "Tests/CloudflareAgentsTests/ReconnectionTests.swift"],
+      "gap": "Swift rejects pending transmitted calls on disconnect, but does not yet preserve never-transmitted buffered RPCs across reconnect like PartySocket."
+    },
+    {
+      "id": "protocol-query-modes",
+      "title": "No-protocol and readonly query modes",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.9,
+      "weight": 3,
+      "upstreamRefs": ["packages/agents/src/tests/agents/protocol-messages.ts", "packages/agents/src/tests/agents/readonly.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/NoProtocolModeTests.swift", "Tests/CloudflareAgentsTests/UpstreamCompatibilityTests.swift"],
+      "gap": "Readonly is exercised as a URL/query and state-error contract; server-side readonly predicates are upstream-only."
+    },
+    {
+      "id": "mcp-server-list",
+      "title": "cf_agent_mcp_servers handshake message",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 3,
+      "upstreamRefs": ["packages/agents/src/types.ts", "packages/agents/src/index.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/McpSessionTests.swift", "Tests/CloudflareAgentsTests/ProtocolMessagesTests.swift"]
+    },
+    {
+      "id": "mcp-agent-event",
+      "title": "cf_mcp_agent_event transport frames",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.2,
+      "weight": 3,
+      "upstreamRefs": ["packages/agents/src/mcp/transport.ts", "packages/agents/src/types.ts"],
+      "evidence": ["Sources/CloudflareAgents/MessageType.swift"],
+      "gap": "Raw message type is declared, but there is no typed Swift MCP transport client."
+    },
+    {
+      "id": "session-frames",
+      "title": "cf_agent_session and cf_agent_session_error frames",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.6,
+      "weight": 2,
+      "upstreamRefs": ["packages/agents/src/experimental/memory/session/session.ts", "packages/agents/src/types.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/McpSessionTests.swift"],
+      "gap": "Frames are surfaced as generic JSON/error callbacks, not typed session models."
+    },
+    {
+      "id": "chat-basic",
+      "title": "Basic chat request, response, messages, and clear wire protocol",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/chat/protocol.ts", "packages/agents/src/ai-chat-agent.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/ChatProtocolTests.swift"]
+    },
+    {
+      "id": "chat-advanced",
+      "title": "Advanced chat cancel, resume, stream-pending, tool result, approval, message update, and recovering frames",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.45,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/chat/protocol.ts", "packages/agents/src/chat/parse-protocol.ts", "packages/agents/src/chat/client-tools.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/ChatProtocolTests.swift", "Sources/CloudflareAgents/MessageType.swift"],
+      "gap": "Current Swift code pins raw values and Codable payload shapes, including the v0.17 stream-pending hint, but does not yet implement resumable streaming or client-tool orchestration."
+    },
+    {
+      "id": "agent-state-store",
+      "title": "SwiftUI/Combine-style state adapter analogous to useAgent state binding",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.8,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/react.tsx"],
+      "evidence": ["Tests/CloudflareAgentsTests/AgentStateStoreTests.swift"],
+      "gap": "Store mirrors state, identity, errors, terminal connection errors, MCP server list, and calls; it does not include React-only async query caching, sub-agent path composition, or hook lifecycle behavior."
+    },
+    {
+      "id": "sub-agent-client-paths",
+      "title": "Client-side sub-agent path composition",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.1,
+      "weight": 4,
+      "upstreamRefs": ["packages/agents/src/react.tsx", "packages/agents/src/sub-routing.ts"],
+      "evidence": ["Sources/CloudflareAgents/AgentClient.swift"],
+      "gap": "Swift supports an arbitrary path suffix, but has no typed root-first sub-agent chain builder."
+    },
+    {
+      "id": "async-query-cache",
+      "title": "Async query/auth parameter cache and refresh behavior",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.1,
+      "weight": 2,
+      "upstreamRefs": ["packages/agents/src/react.tsx", "packages/agents/src/react-tests/cache-invalidation.test.tsx"],
+      "evidence": ["Sources/CloudflareAgents/AgentClient.swift"],
+      "gap": "Swift accepts static query parameters only."
+    },
+    {
+      "id": "agent-fetch",
+      "title": "agentFetch HTTP helper",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 3,
+      "upstreamRefs": ["packages/agents/src/client.ts"],
+      "evidence": [],
+      "gap": "No Swift HTTP helper mirrors upstream agentFetch."
+    },
+    {
+      "id": "typed-stub-proxy",
+      "title": "Typed/dynamic RPC stub proxy",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.15,
+      "weight": 3,
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/tests-d/agent-client-stub.test-d.ts"],
+      "evidence": ["Sources/CloudflareAgents/AgentClient.swift"],
+      "gap": "Swift exposes stringly typed call APIs, not a generated or dynamic typed stub layer."
+    },
+    {
+      "id": "upstream-compat-harness",
+      "title": "Compatibility tests against upstream Worker harness",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.7,
+      "weight": 4,
+      "upstreamRefs": ["packages/agents/src/tests/worker.ts", "packages/agents/src/tests/wrangler.jsonc"],
+      "evidence": ["scripts/test-upstream-compat.mjs", "Tests/CloudflareAgentsTests/UpstreamCompatibilityTests.swift"],
+      "gap": "Harness covers representative client behavior, but not every upstream client/react test scenario and is skipped unless a worker URL is available."
+    },
+    {
+      "id": "readiness-metric",
+      "title": "Repeatable readiness scoring and tests",
+      "scopes": ["swiftClient", "fullUpstreamSdk"],
+      "status": "ported",
+      "coverage": 1.0,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/conformance/README.md", "packages/agents/conformance/baseline-client.yml"],
+      "evidence": ["PortReadiness/port-readiness.json", "scripts/port-readiness.mjs", "Tests/CloudflareAgentsTests/PortReadinessTests.swift"]
+    },
+    {
+      "id": "server-agent-runtime",
+      "title": "Agent server runtime, Durable Object lifecycle, SQL state, and connection APIs",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 20,
+      "upstreamRefs": ["packages/agents/src/index.ts"],
+      "evidence": [],
+      "gap": "Not in scope for this Swift client package."
+    },
+    {
+      "id": "server-callable-routing",
+      "title": "Server callable decorator, routeAgentRequest, getAgentByName, and sub-agent routing",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 8,
+      "upstreamRefs": ["packages/agents/src/index.ts", "packages/agents/src/sub-routing.ts"],
+      "evidence": [],
+      "gap": "Workers server-side APIs are not ported."
+    },
+    {
+      "id": "scheduling-retries",
+      "title": "Scheduling, alarms, queues, and retry helpers",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 8,
+      "upstreamRefs": ["packages/agents/src/schedule.ts", "packages/agents/src/retries.ts", "packages/agents/src/tests/agents/queue.ts", "packages/agents/src/tests/agents/retry.ts"],
+      "evidence": [],
+      "gap": "Server-side background processing APIs are not ported."
+    },
+    {
+      "id": "workflows-durable-execution",
+      "title": "Workflows, durable execution fibers, and stash/recovery",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 14,
+      "upstreamRefs": ["packages/agents/src/workflows.ts", "packages/agents/src/workflow-types.ts", "packages/agents/src/e2e-tests"],
+      "evidence": [],
+      "gap": "Cloudflare Workers durable execution features are not ported."
+    },
+    {
+      "id": "mcp-client-server",
+      "title": "MCP client, MCP server, OAuth provider, transports, and conformance suite",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 14,
+      "upstreamRefs": ["packages/agents/src/mcp", "packages/agents/conformance"],
+      "evidence": [],
+      "gap": "Only a few client-observed MCP wire frames exist in Swift."
+    },
+    {
+      "id": "high-level-chat-sdk",
+      "title": "AIChatAgent, chat SDK, Think-style durable chat, and tool orchestration",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.05,
+      "weight": 12,
+      "upstreamRefs": ["packages/agents/src/ai-chat-agent.ts", "packages/agents/src/chat", "packages/agents/src/chat-sdk"],
+      "evidence": ["Sources/CloudflareAgents/MessageType.swift", "Tests/CloudflareAgentsTests/ChatProtocolTests.swift"],
+      "gap": "Swift has low-level chat frames, not the high-level server/runtime chat agents."
+    },
+    {
+      "id": "react-hooks",
+      "title": "React hooks and React-specific cache behavior",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 8,
+      "upstreamRefs": ["packages/agents/src/react.tsx", "packages/agents/src/ai-react.tsx", "packages/agents/src/react-tests"],
+      "evidence": [],
+      "gap": "Not applicable directly to Swift; AgentStateStore is the closest native analogue and is scored separately."
+    },
+    {
+      "id": "email-webhooks-push",
+      "title": "Email routing, secure reply resolver, webhooks, and push notifications",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 8,
+      "upstreamRefs": ["packages/agents/src/email.ts"],
+      "evidence": [],
+      "gap": "No Swift port."
+    },
+    {
+      "id": "browser-voice-memory",
+      "title": "Browser automation, voice, and experimental memory/session utilities",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 6,
+      "upstreamRefs": ["packages/agents/src/browser", "packages/agents/src/experimental/memory"],
+      "evidence": [],
+      "gap": "No Swift port."
+    },
+    {
+      "id": "observability",
+      "title": "Diagnostics-channel observability events",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/observability"],
+      "evidence": [],
+      "gap": "No Swift observability event bridge."
+    },
+    {
+      "id": "cli-vite-skills",
+      "title": "CLI, Vite plugin, and skills tooling",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "gap",
+      "coverage": 0.0,
+      "weight": 5,
+      "upstreamRefs": ["packages/agents/src/cli", "packages/agents/src/skills", "packages/agents/src/vite.ts"],
+      "evidence": [],
+      "gap": "No Swift port."
+    },
+    {
+      "id": "serializable-type-system",
+      "title": "Serializable type utilities and compile-time RPC typing",
+      "scopes": ["fullUpstreamSdk"],
+      "status": "partial",
+      "coverage": 0.35,
+      "weight": 4,
+      "upstreamRefs": ["packages/agents/src/serializable.ts", "packages/agents/src/tests-d"],
+      "evidence": ["Sources/CloudflareAgents/MessageType.swift", "Tests/CloudflareAgentsTests/MessageTypeTests.swift"],
+      "gap": "AnyCodable covers runtime JSON values, but TypeScript compile-time RPC inference has no Swift equivalent yet."
+    }
+  ]
+}

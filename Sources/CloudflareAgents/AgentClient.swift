@@ -24,6 +24,40 @@ public enum StateSource: Equatable, Sendable {
     case client
 }
 
+public struct AgentConnectionCloseEvent: Equatable, Sendable {
+    public let code: Int
+    public let reason: String
+    public let wasClean: Bool
+
+    public init(code: Int, reason: String = "", wasClean: Bool = false) {
+        self.code = code
+        self.reason = reason
+        self.wasClean = wasClean
+    }
+}
+
+public struct AgentConnectionError: LocalizedError, Equatable, Sendable {
+    public let name = "AgentConnectionError"
+    public let code: Int
+    public let reason: String
+    public let wasClean: Bool
+
+    public init(code: Int, reason: String = "", wasClean: Bool = false) {
+        self.code = code
+        self.reason = reason
+        self.wasClean = wasClean
+    }
+
+    public var errorDescription: String? {
+        let detail = reason.isEmpty ? "WebSocket closed with code \(code)" : reason
+        return "Agent connection closed: \(detail)"
+    }
+}
+
+public func isTerminalCloseCode(_ code: Int) -> Bool {
+    code == 1008 || (4000...4999).contains(code)
+}
+
 /// Swift client for Cloudflare Agents SDK — mirrors JS AgentClient
 /// Connects via WebSocket, handles identity, state sync, and RPC calls
 public actor AgentClient<State: Codable & Sendable> {
@@ -34,6 +68,7 @@ public actor AgentClient<State: Codable & Sendable> {
     public private(set) var connectionState: AgentConnectionState = .disconnected
     public private(set) var state: State?
     public private(set) var identified = false
+    public private(set) var connectionError: AgentConnectionError?
 
     // Upstream TS only reports cf_agent_state_error. Keep the latest server
     // snapshot so Swift observers can recover from rejected optimistic state.
@@ -56,12 +91,15 @@ public actor AgentClient<State: Codable & Sendable> {
     private var onChatClear: (@Sendable () -> Void)?
     private var onSession: (@Sendable ([String: Any]) -> Void)?
     private var onSessionError: (@Sendable (String) -> Void)?
+    private var onConnectionError: (@Sendable (AgentConnectionError) -> Void)?
     private var receiveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var heartbeatInterval: TimeInterval = 12
     private var readyContinuation: CheckedContinuation<Void, Never>?
     private var previousName: String?
     private var previousAgent: String?
+    private let defaultCallTimeout: TimeInterval
+    private let shouldReconnectOnClose: (@Sendable (AgentConnectionCloseEvent) -> Bool)?
 
     /// Auto-reconnect configuration
     public private(set) var autoReconnectEnabled: Bool = false
@@ -80,6 +118,8 @@ public actor AgentClient<State: Codable & Sendable> {
         public let path: String?
         public let query: [String: String]?
         public let headers: [String: String]?
+        public let defaultCallTimeout: TimeInterval
+        public let shouldReconnectOnClose: (@Sendable (AgentConnectionCloseEvent) -> Bool)?
 
         public init(
             agent: String,
@@ -88,7 +128,9 @@ public actor AgentClient<State: Codable & Sendable> {
             basePath: String? = nil,
             path: String? = nil,
             query: [String: String]? = nil,
-            headers: [String: String]? = nil
+            headers: [String: String]? = nil,
+            defaultCallTimeout: TimeInterval = 30.0,
+            shouldReconnectOnClose: (@Sendable (AgentConnectionCloseEvent) -> Bool)? = nil
         ) {
             self.agent = agent
             self.name = name
@@ -97,6 +139,8 @@ public actor AgentClient<State: Codable & Sendable> {
             self.path = path
             self.query = query
             self.headers = headers
+            self.defaultCallTimeout = defaultCallTimeout
+            self.shouldReconnectOnClose = shouldReconnectOnClose
         }
     }
 
@@ -129,6 +173,8 @@ public actor AgentClient<State: Codable & Sendable> {
 
         self.baseURL = components.url!
         self.session = URLSession(configuration: .default)
+        self.defaultCallTimeout = options.defaultCallTimeout
+        self.shouldReconnectOnClose = options.shouldReconnectOnClose
     }
 
     deinit {
@@ -162,6 +208,7 @@ public actor AgentClient<State: Codable & Sendable> {
     }
 
     private func openConnection() {
+        connectionError = nil
         connectionState = .connecting
         onConnectionStateChange?(.connecting)
 
@@ -272,6 +319,7 @@ public actor AgentClient<State: Codable & Sendable> {
 
     /// Call a method on the server agent
     public func call(_ method: String, args: [AnyCodable] = []) async throws -> AnyCodable? {
+        guard webSocketTask != nil else { throw AgentError.connectionClosed }
         let request = RPCRequest(method: method, args: args)
         let data = try JSONEncoder().encode(request)
         guard let json = String(data: data, encoding: .utf8) else {
@@ -280,6 +328,18 @@ public actor AgentClient<State: Codable & Sendable> {
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingCalls[request.id] = continuation
+
+            let timeout = defaultCallTimeout
+            if timeout > 0 {
+                let timeoutTask = Task { [weak self] in
+                    let nanoseconds = UInt64(timeout * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: nanoseconds)
+                    guard !Task.isCancelled else { return }
+                    await self?.timeoutCall(id: request.id, method: method, seconds: timeout)
+                }
+                pendingTimeoutTasks[request.id] = timeoutTask
+            }
+
             webSocketTask?.send(.string(json)) { [weak self] error in
                 if let error {
                     Task { await self?.rejectCall(id: request.id, error: error) }
@@ -290,6 +350,7 @@ public actor AgentClient<State: Codable & Sendable> {
 
     /// Convenience: call with timeout
     public func call(_ method: String, args: [AnyCodable] = [], timeout: TimeInterval) async throws -> AnyCodable? {
+        guard webSocketTask != nil else { throw AgentError.connectionClosed }
         let request = RPCRequest(method: method, args: args)
         let data = try JSONEncoder().encode(request)
         guard let json = String(data: data, encoding: .utf8) else {
@@ -299,13 +360,15 @@ public actor AgentClient<State: Codable & Sendable> {
         return try await withCheckedThrowingContinuation { continuation in
             pendingCalls[request.id] = continuation
 
-            let timeoutTask = Task { [weak self] in
-                let nanoseconds = UInt64(max(timeout, 0) * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: nanoseconds)
-                guard !Task.isCancelled else { return }
-                await self?.timeoutCall(id: request.id, method: method, seconds: timeout)
+            if timeout > 0 {
+                let timeoutTask = Task { [weak self] in
+                    let nanoseconds = UInt64(timeout * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: nanoseconds)
+                    guard !Task.isCancelled else { return }
+                    await self?.timeoutCall(id: request.id, method: method, seconds: timeout)
+                }
+                pendingTimeoutTasks[request.id] = timeoutTask
             }
-            pendingTimeoutTasks[request.id] = timeoutTask
 
             webSocketTask?.send(.string(json)) { [weak self] error in
                 if let error {
@@ -329,6 +392,7 @@ public actor AgentClient<State: Codable & Sendable> {
         timeout: TimeInterval? = nil,
         onChunk: @escaping @Sendable (AnyCodable?) -> Void
     ) async throws -> AnyCodable? {
+        guard webSocketTask != nil else { throw AgentError.connectionClosed }
         let request = RPCRequest(method: method, args: args)
         let data = try JSONEncoder().encode(request)
         guard let json = String(data: data, encoding: .utf8) else {
@@ -339,9 +403,9 @@ public actor AgentClient<State: Codable & Sendable> {
             pendingCalls[request.id] = continuation
             pendingStreamChunks[request.id] = onChunk
 
-            if let timeout {
+            if let timeout, timeout > 0 {
                 let timeoutTask = Task { [weak self] in
-                    let nanoseconds = UInt64(max(timeout, 0) * 1_000_000_000)
+                    let nanoseconds = UInt64(timeout * 1_000_000_000)
                     try? await Task.sleep(nanoseconds: nanoseconds)
                     guard !Task.isCancelled else { return }
                     await self?.timeoutCall(id: request.id, method: method, seconds: timeout)
@@ -394,6 +458,10 @@ public actor AgentClient<State: Codable & Sendable> {
 
     public func onConnectionStateChange(_ handler: @escaping @Sendable (AgentConnectionState) -> Void) {
         self.onConnectionStateChange = handler
+    }
+
+    public func onConnectionError(_ handler: @escaping @Sendable (AgentConnectionError) -> Void) {
+        self.onConnectionError = handler
     }
 
     public func onMcpServers(_ handler: @escaping @Sendable ([McpServerInfo]) -> Void) {
@@ -475,22 +543,60 @@ public actor AgentClient<State: Codable & Sendable> {
                     break
                 }
             } catch {
-                heartbeatTask?.cancel()
-                heartbeatTask = nil
-                webSocketTask = nil
-                receiveTask = nil
-                identified = false
-                connectionState = .disconnected
-                onConnectionStateChange?(.disconnected)
                 if !Task.isCancelled {
-                    onError?(error)
-                    if autoReconnectEnabled {
-                        scheduleReconnect()
-                    }
+                    handleSocketClose(error, task: ws)
                 }
                 break
             }
         }
+    }
+
+    private func handleSocketClose(_ error: Error, task: URLSessionWebSocketTask) {
+        let closeEvent = Self.closeEvent(from: task)
+        let terminalClose = closeEvent.map { isTerminalCloseCode($0.code) } ?? false
+        let shouldReconnect = closeEvent.map { shouldReconnectOnClose?($0) ?? true } ?? true
+        let terminalError = closeEvent.map {
+            AgentConnectionError(code: $0.code, reason: $0.reason, wasClean: $0.wasClean)
+        }
+
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        webSocketTask = nil
+        receiveTask = nil
+        identified = false
+        connectionState = .disconnected
+        onConnectionStateChange?(.disconnected)
+
+        pendingTimeoutTasks.values.forEach { $0.cancel() }
+        pendingTimeoutTasks.removeAll()
+        pendingStreamChunks.removeAll()
+        for (_, continuation) in pendingCalls {
+            continuation.resume(throwing: terminalError ?? AgentError.connectionClosed)
+        }
+        pendingCalls.removeAll()
+
+        if terminalClose, let terminalError {
+            connectionError = terminalError
+            onConnectionError?(terminalError)
+            onError?(terminalError)
+            return
+        }
+
+        onError?(error)
+        if autoReconnectEnabled && shouldReconnect {
+            scheduleReconnect()
+        }
+    }
+
+    private static func closeEvent(from task: URLSessionWebSocketTask) -> AgentConnectionCloseEvent? {
+        let code = Int(task.closeCode.rawValue)
+        guard code > 0 else { return nil }
+        let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        return AgentConnectionCloseEvent(
+            code: code,
+            reason: reason,
+            wasClean: task.closeCode == .normalClosure
+        )
     }
 
     private func scheduleReconnect() {
