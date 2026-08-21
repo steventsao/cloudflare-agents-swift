@@ -107,15 +107,29 @@ public actor AgentClient<State: Codable & Sendable> {
     private var reconnectAttempt: Int = 0
     private var reconnectTask: Task<Void, Never>?
 
-    /// URL path construction matching JS AgentClient
+    /// One hop in a root-first sub-agent chain (mirrors `useAgent({ sub })`).
+    public struct SubAgentStep: Equatable, Sendable {
+        public let agent: String
+        public let name: String
+
+        public init(agent: String, name: String) {
+            self.agent = agent
+            self.name = name
+        }
+    }
+
+    /// URL path construction matching JS AgentClient / useAgent
     /// Standard: /agents/{agent-name}/{instance-name}
     /// BasePath: /{basePath}
+    /// Sub-agent: /agents/{root}/{name}/sub/{child}/{child-name}/...
     public struct Options: Sendable {
         public let agent: String
         public let name: String
         public let host: String
         public let basePath: String?
         public let path: String?
+        /// Root-first child chain appended as `/sub/{agent}/{name}/...` before `path`.
+        public let sub: [SubAgentStep]?
         public let query: [String: String]?
         public let headers: [String: String]?
         public let defaultCallTimeout: TimeInterval
@@ -127,6 +141,7 @@ public actor AgentClient<State: Codable & Sendable> {
             host: String,
             basePath: String? = nil,
             path: String? = nil,
+            sub: [SubAgentStep]? = nil,
             query: [String: String]? = nil,
             headers: [String: String]? = nil,
             defaultCallTimeout: TimeInterval = 30.0,
@@ -137,6 +152,7 @@ public actor AgentClient<State: Codable & Sendable> {
             self.host = host
             self.basePath = basePath
             self.path = path
+            self.sub = sub
             self.query = query
             self.headers = headers
             self.defaultCallTimeout = defaultCallTimeout
@@ -147,7 +163,7 @@ public actor AgentClient<State: Codable & Sendable> {
     private let headers: [String: String]
 
     public init(options: Options) {
-        self.agentName = Self.camelCaseToKebabCase(options.agent)
+        self.agentName = camelCaseToKebabCase(options.agent)
         self.instanceName = options.name
         self.headers = options.headers ?? [:]
 
@@ -157,8 +173,16 @@ public actor AgentClient<State: Codable & Sendable> {
         } else {
             urlString = "\(options.host)/agents/\(self.agentName)/\(options.name)"
         }
-        if let path = options.path {
-            urlString += "/\(path)"
+
+        let combinedPath: String? = {
+            let subSteps = (options.sub ?? []).map {
+                AgentPathStep(className: $0.agent, name: $0.name)
+            }
+            let composed = AgentPath.buildSubAgentPathUnchecked(subSteps, leafPath: options.path)
+            return composed.isEmpty ? nil : composed
+        }()
+        if let combinedPath {
+            urlString += "/\(combinedPath)"
         }
 
         // Convert http(s) to ws(s) for WebSocket
@@ -756,19 +780,6 @@ public actor AgentClient<State: Codable & Sendable> {
         pendingTimeoutTasks.removeValue(forKey: id)?.cancel()
         pendingStreamChunks.removeValue(forKey: id)
         continuation.resume(throwing: AgentError.timeout(method: method, seconds: seconds))
-    }
-
-    private static func camelCaseToKebabCase(_ input: String) -> String {
-        var result = ""
-        for (i, char) in input.enumerated() {
-            if char.isUppercase {
-                if i > 0 { result += "-" }
-                result += char.lowercased()
-            } else {
-                result += String(char)
-            }
-        }
-        return result
     }
 
     func makeWebSocketRequest() -> URLRequest {

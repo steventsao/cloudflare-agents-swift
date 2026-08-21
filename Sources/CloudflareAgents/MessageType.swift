@@ -148,6 +148,16 @@ public struct ChatRequestCancelMessage: Codable, Sendable {
     }
 }
 
+/// Why `cf_agent_stream_resume_none` was offered.
+///
+/// Mirrors `STREAM_RESUME_NONE_REASONS` from upstream `agents/chat/protocol`.
+/// Only `idle` proves global inactivity; `continuationOwned` means another
+/// live connection owns an active tool continuation.
+public enum StreamResumeNoneReason: String, Codable, Sendable {
+    case idle = "idle"
+    case continuationOwned = "continuation-owned"
+}
+
 /// A stream resume acknowledgement for resumable chat streams.
 public struct ChatStreamResumeAckMessage: Codable, Sendable {
     public let type: MessageType
@@ -159,14 +169,58 @@ public struct ChatStreamResumeAckMessage: Codable, Sendable {
     }
 }
 
+/// Client resume probe after the message handler is registered.
+public struct ChatStreamResumeRequestMessage: Codable, Sendable {
+    public let type: MessageType
+    /// Opaque correlation id echoed by direct server responses.
+    public let probeId: String?
+
+    public init(probeId: String? = nil) {
+        self.type = .streamResumeRequest
+        self.probeId = probeId
+    }
+}
+
+/// Server offer that a resumable stream is available / being replayed.
+public struct ChatStreamResumingMessage: Codable, Sendable {
+    public let type: MessageType
+    public let id: String
+    /// Present when this offer directly answers a client resume probe.
+    public let probeId: String?
+
+    public init(id: String, probeId: String? = nil) {
+        self.type = .streamResuming
+        self.id = id
+        self.probeId = probeId
+    }
+}
+
+/// Server response when no stream is offered for this client.
+public struct ChatStreamResumeNoneMessage: Codable, Sendable {
+    public let type: MessageType
+    /// Why no stream was offered. Omitted by older servers.
+    public let reason: StreamResumeNoneReason?
+    /// Correlates an authoritative response to its client resume probe.
+    public let probeId: String?
+
+    public init(reason: StreamResumeNoneReason? = nil, probeId: String? = nil) {
+        self.type = .streamResumeNone
+        self.reason = reason
+        self.probeId = probeId
+    }
+}
+
 /// A stream-pending hint for resumable chat handshakes.
 public struct ChatStreamPendingMessage: Codable, Sendable {
     public let type: MessageType
     public let id: String?
+    /// Correlates a direct keep-waiting response to its client probe.
+    public let probeId: String?
 
-    public init(id: String? = nil) {
+    public init(id: String? = nil, probeId: String? = nil) {
         self.type = .streamPending
         self.id = id
+        self.probeId = probeId
     }
 }
 
