@@ -131,6 +131,34 @@ final class ChatProtocolTests: XCTestCase {
         XCTAssertNil(decodedWithoutID.id)
     }
 
+    func testChatStreamResumeProbeFieldsRoundTrip() throws {
+        let request = ChatStreamResumeRequestMessage(probeId: "probe-1")
+        let requestData = try JSONEncoder().encode(request)
+        let decodedRequest = try JSONDecoder().decode(ChatStreamResumeRequestMessage.self, from: requestData)
+        XCTAssertEqual(decodedRequest.type, .streamResumeRequest)
+        XCTAssertEqual(decodedRequest.probeId, "probe-1")
+
+        let resumingJSON = #"{"type":"cf_agent_stream_resuming","id":"req-9","probeId":"probe-1"}"#.data(using: .utf8)!
+        let resuming = try JSONDecoder().decode(ChatStreamResumingMessage.self, from: resumingJSON)
+        XCTAssertEqual(resuming.id, "req-9")
+        XCTAssertEqual(resuming.probeId, "probe-1")
+
+        let noneJSON = #"{"type":"cf_agent_stream_resume_none","reason":"continuation-owned","probeId":"probe-1"}"#.data(using: .utf8)!
+        let none = try JSONDecoder().decode(ChatStreamResumeNoneMessage.self, from: noneJSON)
+        XCTAssertEqual(none.reason, .continuationOwned)
+        XCTAssertEqual(none.probeId, "probe-1")
+
+        let idle = ChatStreamResumeNoneMessage(reason: .idle)
+        let idleData = try JSONEncoder().encode(idle)
+        let idleJSON = try XCTUnwrap(try JSONSerialization.jsonObject(with: idleData) as? [String: Any])
+        XCTAssertEqual(idleJSON["reason"] as? String, "idle")
+
+        let pendingJSON = #"{"type":"cf_agent_stream_pending","id":"req-1","probeId":"probe-2"}"#.data(using: .utf8)!
+        let pending = try JSONDecoder().decode(ChatStreamPendingMessage.self, from: pendingJSON)
+        XCTAssertEqual(pending.id, "req-1")
+        XCTAssertEqual(pending.probeId, "probe-2")
+    }
+
     func testChatToolResultRoundTrip() throws {
         let result = ChatToolResultMessage(
             toolCallId: "tc-1",

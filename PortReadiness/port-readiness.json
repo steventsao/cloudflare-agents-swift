@@ -4,12 +4,13 @@
   "generatedFrom": {
     "upstreamPackage": "agents",
     "upstreamRepository": "https://github.com/cloudflare/agents",
-    "upstreamVersion": "0.17.0",
-    "upstreamTag": "agents@0.17.0",
-    "upstreamCommit": "062611de3dcf9278c5759a959d408ed0d736b64d",
-    "checkedAt": "2026-06-26",
+    "upstreamVersion": "0.21.0",
+    "upstreamTag": "agents@0.21.0",
+    "upstreamCommit": "d42494503efe836a073fbf911fae1fbd12253198",
+    "checkedAt": "2026-08-21",
     "notes": [
-      "npm dist-tag latest reported 0.17.0 on 2026-06-26.",
+      "npm dist-tag latest reported 0.21.0 on 2026-08-21.",
+      "AgentClient and types.ts are unchanged from 0.17.0; catch-up ports buildAgentPath/buildAgentUrl, chat resume probeId/reason fields, and camelCaseToKebabCase all-caps parity.",
       "The Swift package is primarily a client and wire-protocol port, not a full Cloudflare Workers Agents server SDK."
     ]
   },
@@ -33,7 +34,7 @@
       "coverage": 1.0,
       "weight": 2,
       "upstreamRefs": ["packages/agents/package.json"],
-      "evidence": ["PortReadiness/port-readiness.json", "README.md"]
+      "evidence": ["PortReadiness/port-readiness.json", "README.md", "Sources/CloudflareAgents/Naming.swift"]
     },
     {
       "id": "url-options",
@@ -42,8 +43,8 @@
       "status": "ported",
       "coverage": 1.0,
       "weight": 5,
-      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/react.tsx"],
-      "evidence": ["Tests/CloudflareAgentsTests/AgentClientTests.swift"]
+      "upstreamRefs": ["packages/agents/src/client.ts", "packages/agents/src/react.tsx", "packages/agents/src/sub-routing.ts"],
+      "evidence": ["Tests/CloudflareAgentsTests/AgentClientTests.swift", "Sources/CloudflareAgents/AgentPath.swift"]
     },
     {
       "id": "websocket-lifecycle",
@@ -185,33 +186,32 @@
       "title": "Advanced chat cancel, resume, stream-pending, tool result, approval, message update, and recovering frames",
       "scopes": ["swiftClient", "fullUpstreamSdk"],
       "status": "partial",
-      "coverage": 0.45,
+      "coverage": 0.55,
       "weight": 5,
-      "upstreamRefs": ["packages/agents/src/chat/protocol.ts", "packages/agents/src/chat/parse-protocol.ts", "packages/agents/src/chat/client-tools.ts"],
+      "upstreamRefs": ["packages/agents/src/chat/protocol.ts", "packages/agents/src/chat/parse-protocol.ts", "packages/agents/src/chat/client-tools.ts", "packages/agents/src/chat/wire-types.ts"],
       "evidence": ["Tests/CloudflareAgentsTests/ChatProtocolTests.swift", "Sources/CloudflareAgents/MessageType.swift"],
-      "gap": "Current Swift code pins raw values and Codable payload shapes, including the v0.17 stream-pending hint, but does not yet implement resumable streaming or client-tool orchestration."
+      "gap": "Swift pins raw values and Codable payload shapes, including v0.21 resume probeId/reason fields, but does not yet implement resumable streaming or client-tool orchestration."
     },
     {
       "id": "agent-state-store",
       "title": "SwiftUI/Combine-style state adapter analogous to useAgent state binding",
       "scopes": ["swiftClient", "fullUpstreamSdk"],
       "status": "partial",
-      "coverage": 0.8,
+      "coverage": 0.85,
       "weight": 5,
       "upstreamRefs": ["packages/agents/src/react.tsx"],
-      "evidence": ["Tests/CloudflareAgentsTests/AgentStateStoreTests.swift"],
-      "gap": "Store mirrors state, identity, errors, terminal connection errors, MCP server list, and calls; it does not include React-only async query caching, sub-agent path composition, or hook lifecycle behavior."
+      "evidence": ["Tests/CloudflareAgentsTests/AgentStateStoreTests.swift", "Tests/CloudflareAgentsTests/AgentClientTests.swift"],
+      "gap": "Store mirrors state, identity, errors, terminal connection errors, MCP server list, and calls; AgentClient Options.sub covers sub-agent path composition, but React-only async query caching and hook lifecycle behavior remain out of scope."
     },
     {
       "id": "sub-agent-client-paths",
       "title": "Client-side sub-agent path composition",
       "scopes": ["swiftClient", "fullUpstreamSdk"],
-      "status": "gap",
-      "coverage": 0.1,
+      "status": "ported",
+      "coverage": 1.0,
       "weight": 4,
       "upstreamRefs": ["packages/agents/src/react.tsx", "packages/agents/src/sub-routing.ts"],
-      "evidence": ["Sources/CloudflareAgents/AgentClient.swift"],
-      "gap": "Swift supports an arbitrary path suffix, but has no typed root-first sub-agent chain builder."
+      "evidence": ["Sources/CloudflareAgents/AgentPath.swift", "Tests/CloudflareAgentsTests/AgentPathTests.swift", "Tests/CloudflareAgentsTests/AgentClientTests.swift"]
     },
     {
       "id": "async-query-cache",

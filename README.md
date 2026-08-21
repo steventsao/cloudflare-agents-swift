@@ -4,7 +4,7 @@ Swift client for the [Cloudflare Agents SDK](https://github.com/cloudflare/agent
 
 Mirrors the TypeScript `AgentClient` — connects to a Cloudflare Durable Object agent over WebSocket and handles the full wire protocol: identity handshake, state synchronization, RPC calls (including streaming), and auto-reconnect with exponential backoff.
 
-**Compatibility:** targets [`cloudflare/agents`](https://github.com/cloudflare/agents) **v0.17.0** for the Swift client/wire-protocol surface. Use the readiness score below to see what is fully ported versus intentionally out of scope for this package.
+**Compatibility:** targets [`cloudflare/agents`](https://github.com/cloudflare/agents) **v0.21.0** for the Swift client/wire-protocol surface. Use the readiness score below to see what is fully ported versus intentionally out of scope for this package.
 
 ## Usage
 
@@ -97,6 +97,7 @@ dependencies: [
 - No-protocol mode (`?protocol=false`) and readonly mode (`?readonly=true`)
 - Custom headers and query parameters
 - `basePath` routing for non-standard agent URLs
+- Typed root-first sub-agent paths via `buildAgentPath` / `buildAgentURL` and `Options.sub`
 - Swift concurrency (`actor`-based, `Sendable`-safe)
 - Main-actor `AgentStateStore` adapter with `@Published` state, identity, connection, and error properties
 - Multiple `AgentStateStore` instances in one view/model, each with independent socket, identity, state, and errors
@@ -148,11 +149,11 @@ Wire format matches the [cloudflare/agents](https://github.com/cloudflare/agents
 | `cf_agent_chat_messages` | server -> client | Full chat message list broadcast |
 | `cf_agent_chat_clear` | bidirectional | Clear chat history |
 | `cf_agent_chat_request_cancel` | client -> server | Cancel a chat request |
-| `cf_agent_stream_resuming` | server -> client | Chat stream resume hint |
+| `cf_agent_stream_resuming` | server -> client | Chat stream resume hint (`id`, optional `probeId`) |
 | `cf_agent_stream_resume_ack` | client -> server | Chat stream resume acknowledgement |
-| `cf_agent_stream_resume_request` | client -> server | Request chat stream resume |
-| `cf_agent_stream_resume_none` | server -> client | No resumable stream available |
-| `cf_agent_stream_pending` | server -> client | Accepted chat turn whose resumable stream has not started |
+| `cf_agent_stream_resume_request` | client -> server | Request chat stream resume (optional `probeId`) |
+| `cf_agent_stream_resume_none` | server -> client | No resumable stream (`reason`: `idle` \| `continuation-owned`, optional `probeId`) |
+| `cf_agent_stream_pending` | server -> client | Accepted chat turn whose resumable stream has not started (optional `probeId`) |
 | `cf_agent_tool_result` | client -> server | Client tool result |
 | `cf_agent_tool_approval` | client -> server | Client tool approval |
 | `cf_agent_message_updated` | server -> client | Message update hint |
@@ -166,10 +167,10 @@ This repo now tracks port progress in [`PortReadiness/port-readiness.json`](Port
 ./scripts/port-readiness.mjs
 ```
 
-Current score against `agents` v0.17.0:
+Current score against `agents` v0.21.0:
 
-- `swiftClient`: **76.4%** - client/wire protocol target for this package.
-- `fullUpstreamSdk`: **35.4%** - the entire upstream npm package, including Workers server runtime, React, MCP server/client, workflows, email, browser, CLI, and other non-client surfaces.
+- `swiftClient`: **81.1%** - client/wire protocol target for this package.
+- `fullUpstreamSdk`: **37.6%** - the entire upstream npm package, including Workers server runtime, React, MCP server/client, workflows, email, browser, CLI, and other non-client surfaces.
 
 Common practice for moving the score up:
 
@@ -178,7 +179,7 @@ Common practice for moving the score up:
 - For wire compatibility, add or extend an `UpstreamCompatibilityTests` case and run it through `./scripts/test-upstream-compat.mjs`.
 - Only move an item to `ported` when it has both an upstream reference and local evidence.
 
-The largest current Swift-client gaps are typed sub-agent path composition, `agentFetch`, advanced resumable chat/client-tool orchestration, typed RPC stubs, and a typed MCP transport.
+The largest current Swift-client gaps are `agentFetch`, advanced resumable chat/client-tool orchestration, typed RPC stubs, and a typed MCP transport.
 
 ## Interop note: your `State` must emit explicit `null`
 

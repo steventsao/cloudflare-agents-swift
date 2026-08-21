@@ -7,8 +7,8 @@ final class PortReadinessTests: XCTestCase {
         let swiftClient = score(manifest, scope: "swiftClient")
         let fullUpstream = score(manifest, scope: "fullUpstreamSdk")
 
-        XCTAssertGreaterThanOrEqual(swiftClient.percent, 0.75)
-        XCTAssertGreaterThanOrEqual(fullUpstream.percent, 0.30)
+        XCTAssertGreaterThanOrEqual(swiftClient.percent, 0.80)
+        XCTAssertGreaterThanOrEqual(fullUpstream.percent, 0.35)
     }
 
     func testPortedItemsHaveEvidenceAndUpstreamReferences() throws {

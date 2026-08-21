@@ -53,6 +53,35 @@ final class AgentClientTests: XCTestCase {
         XCTAssertEqual(url.absoluteString, "ws://localhost:8787/agents/chat-agent/my-room/settings")
     }
 
+    func testURLConstructionWithSubAgentChain() async {
+        let options = AgentClient<EmptyState>.Options(
+            agent: "Inbox",
+            name: "user-123",
+            host: "https://example.com",
+            path: "settings",
+            sub: [
+                .init(agent: "Chat", name: "chat-456")
+            ]
+        )
+        let client = AgentClient<EmptyState>(options: options)
+        let url = await client.baseURL
+        XCTAssertEqual(
+            url.absoluteString,
+            "wss://example.com/agents/inbox/user-123/sub/chat/chat-456/settings"
+        )
+    }
+
+    func testAllCapsAgentBindingSlug() async {
+        let options = AgentClient<EmptyState>.Options(
+            agent: "COUNTER_DO",
+            name: "user-123",
+            host: "https://example.com"
+        )
+        let client = AgentClient<EmptyState>(options: options)
+        let url = await client.baseURL
+        XCTAssertEqual(url.absoluteString, "wss://example.com/agents/counter-do/user-123")
+    }
+
     func testURLConstructionDefaultName() async {
         let options = AgentClient<EmptyState>.Options(
             agent: "MyAgent",
